@@ -1,4 +1,5 @@
-﻿using Microsoft.Data.Sqlite;
+﻿using System.Diagnostics;
+using Microsoft.Data.Sqlite;
 
 if (args.Length == 0)
 {
@@ -38,50 +39,25 @@ static int RunScan(string[] args, string dbPath)
     using var connection = OpenConnection(dbPath);
     using var tx = connection.BeginTransaction();
 
-    using (var cmd = connection.CreateCommand())
+    InsertScanJob(connection, tx, scanId, absoluteRoot);
+
+    foreach (var file in EnumerateCandidateFiles(absoluteRoot))
     {
-        cmd.Transaction = tx;
-        cmd.CommandText = """
-            INSERT INTO scan_jobs(scan_id, root_path, status, started_at_utc, finished_at_utc)
-            VALUES($scanId, $rootPath, 'running', $startedAt, NULL);
-            """;
-        cmd.Parameters.AddWithValue("$scanId", scanId);
-        cmd.Parameters.AddWithValue("$rootPath", absoluteRoot);
-        cmd.Parameters.AddWithValue("$startedAt", DateTime.UtcNow.ToString("O"));
-        cmd.ExecuteNonQuery();
+        var classification = ClassifyFile(file);
+        var scanFileId = InsertScanFile(connection, tx, scanId, file, classification);
+
+        if (classification.FileType == "dotnet-managed")
+        {
+            var metadata = ExtractManagedMetadata(file, classification);
+            InsertAssemblyMetadata(connection, tx, scanFileId, metadata);
+
+            var evidence = BuildVendorEvidence(file, metadata);
+            InsertVendorEvidence(connection, tx, scanFileId, evidence);
+            InsertVendorResult(connection, tx, scanFileId, evidence);
+        }
     }
 
-    var files = EnumerateCandidateFiles(absoluteRoot);
-    foreach (var file in files)
-    {
-        var fileType = ClassifyFile(file);
-        using var cmd = connection.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = """
-            INSERT INTO scan_files(scan_id, file_path, file_type, status, reason_code)
-            VALUES($scanId, $filePath, $fileType, $status, $reasonCode);
-            """;
-        cmd.Parameters.AddWithValue("$scanId", scanId);
-        cmd.Parameters.AddWithValue("$filePath", file);
-        cmd.Parameters.AddWithValue("$fileType", fileType.FileType);
-        cmd.Parameters.AddWithValue("$status", fileType.Status);
-        cmd.Parameters.AddWithValue("$reasonCode", fileType.ReasonCode ?? string.Empty);
-        cmd.ExecuteNonQuery();
-    }
-
-    using (var cmd = connection.CreateCommand())
-    {
-        cmd.Transaction = tx;
-        cmd.CommandText = """
-            UPDATE scan_jobs
-            SET status = 'completed', finished_at_utc = $finishedAt
-            WHERE scan_id = $scanId;
-            """;
-        cmd.Parameters.AddWithValue("$finishedAt", DateTime.UtcNow.ToString("O"));
-        cmd.Parameters.AddWithValue("$scanId", scanId);
-        cmd.ExecuteNonQuery();
-    }
-
+    CompleteScanJob(connection, tx, scanId);
     tx.Commit();
 
     Console.WriteLine($"scanId: {scanId}");
@@ -141,15 +117,179 @@ static int RunStatus(string[] args, string dbPath)
         Console.WriteLine($"failed: {statsReader.GetInt64(3)}");
     }
 
+    using var metaCmd = connection.CreateCommand();
+    metaCmd.CommandText = """
+        SELECT COUNT(*)
+        FROM assembly_metadata m
+        JOIN scan_files f ON f.id = m.scan_file_id
+        WHERE f.scan_id = $scanId;
+        """;
+    metaCmd.Parameters.AddWithValue("$scanId", scanId);
+    Console.WriteLine($"managedMetadata: {Convert.ToInt64(metaCmd.ExecuteScalar())}");
+
+    using var vendorCmd = connection.CreateCommand();
+    vendorCmd.CommandText = """
+        SELECT
+            SUM(CASE WHEN vr.status = 'attributed' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN vr.status = 'inconclusive' THEN 1 ELSE 0 END)
+        FROM vendor_results vr
+        JOIN scan_files f ON f.id = vr.scan_file_id
+        WHERE f.scan_id = $scanId;
+        """;
+    vendorCmd.Parameters.AddWithValue("$scanId", scanId);
+    using var vendorReader = vendorCmd.ExecuteReader();
+    if (vendorReader.Read())
+    {
+        Console.WriteLine($"vendorAttributed: {vendorReader.GetInt64(0)}");
+        Console.WriteLine($"vendorInconclusive: {vendorReader.GetInt64(1)}");
+    }
+
     return 0;
 }
 
-static (string FileType, string Status, string? ReasonCode) ClassifyFile(string path)
+static void InsertScanJob(SqliteConnection connection, SqliteTransaction tx, string scanId, string rootPath)
+{
+    using var cmd = connection.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = """
+        INSERT INTO scan_jobs(scan_id, root_path, status, started_at_utc, finished_at_utc)
+        VALUES($scanId, $rootPath, 'running', $startedAt, NULL);
+        """;
+    cmd.Parameters.AddWithValue("$scanId", scanId);
+    cmd.Parameters.AddWithValue("$rootPath", rootPath);
+    cmd.Parameters.AddWithValue("$startedAt", DateTime.UtcNow.ToString("O"));
+    cmd.ExecuteNonQuery();
+}
+
+static void CompleteScanJob(SqliteConnection connection, SqliteTransaction tx, string scanId)
+{
+    using var cmd = connection.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = """
+        UPDATE scan_jobs
+        SET status = 'completed', finished_at_utc = $finishedAt
+        WHERE scan_id = $scanId;
+        """;
+    cmd.Parameters.AddWithValue("$finishedAt", DateTime.UtcNow.ToString("O"));
+    cmd.Parameters.AddWithValue("$scanId", scanId);
+    cmd.ExecuteNonQuery();
+}
+
+static long InsertScanFile(
+    SqliteConnection connection,
+    SqliteTransaction tx,
+    string scanId,
+    string filePath,
+    ClassificationResult classification)
+{
+    using var cmd = connection.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = """
+        INSERT INTO scan_files(scan_id, file_path, file_type, status, reason_code)
+        VALUES($scanId, $filePath, $fileType, $status, $reasonCode);
+        SELECT last_insert_rowid();
+        """;
+    cmd.Parameters.AddWithValue("$scanId", scanId);
+    cmd.Parameters.AddWithValue("$filePath", filePath);
+    cmd.Parameters.AddWithValue("$fileType", classification.FileType);
+    cmd.Parameters.AddWithValue("$status", classification.Status);
+    cmd.Parameters.AddWithValue("$reasonCode", classification.ReasonCode ?? string.Empty);
+    return Convert.ToInt64(cmd.ExecuteScalar());
+}
+
+static void InsertAssemblyMetadata(
+    SqliteConnection connection,
+    SqliteTransaction tx,
+    long scanFileId,
+    ManagedMetadata metadata)
+{
+    using var cmd = connection.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = """
+        INSERT INTO assembly_metadata(
+            scan_file_id, assembly_name, assembly_version, public_key_token,
+            is_single_file, is_ready_to_run, is_native_aot_limited, target_framework
+        )
+        VALUES(
+            $scanFileId, $name, $version, $token,
+            $isSingleFile, $isReadyToRun, $isNativeAot, $targetFramework
+        );
+        """;
+    cmd.Parameters.AddWithValue("$scanFileId", scanFileId);
+    cmd.Parameters.AddWithValue("$name", metadata.AssemblyName);
+    cmd.Parameters.AddWithValue("$version", metadata.AssemblyVersion);
+    cmd.Parameters.AddWithValue("$token", metadata.PublicKeyToken);
+    cmd.Parameters.AddWithValue("$isSingleFile", metadata.IsSingleFile ? 1 : 0);
+    cmd.Parameters.AddWithValue("$isReadyToRun", metadata.IsReadyToRun ? 1 : 0);
+    cmd.Parameters.AddWithValue("$isNativeAot", metadata.IsNativeAotLimited ? 1 : 0);
+    cmd.Parameters.AddWithValue("$targetFramework", metadata.TargetFramework);
+    cmd.ExecuteNonQuery();
+}
+
+static void InsertVendorEvidence(
+    SqliteConnection connection,
+    SqliteTransaction tx,
+    long scanFileId,
+    IReadOnlyList<VendorEvidence> evidenceList)
+{
+    foreach (var evidence in evidenceList)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT INTO vendor_evidence(scan_file_id, evidence_type, vendor_name, confidence)
+            VALUES($scanFileId, $type, $vendorName, $confidence);
+            """;
+        cmd.Parameters.AddWithValue("$scanFileId", scanFileId);
+        cmd.Parameters.AddWithValue("$type", evidence.EvidenceType);
+        cmd.Parameters.AddWithValue("$vendorName", evidence.VendorName);
+        cmd.Parameters.AddWithValue("$confidence", evidence.Confidence);
+        cmd.ExecuteNonQuery();
+    }
+}
+
+static void InsertVendorResult(
+    SqliteConnection connection,
+    SqliteTransaction tx,
+    long scanFileId,
+    IReadOnlyList<VendorEvidence> evidenceList)
+{
+    var distinctVendors = evidenceList
+        .Select(e => e.VendorName)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    var status = "inconclusive";
+    var vendorName = "inconclusive";
+    var confidence = 0;
+
+    if (distinctVendors.Count == 1)
+    {
+        status = "attributed";
+        vendorName = distinctVendors[0];
+        confidence = evidenceList.Max(e => e.Confidence);
+    }
+
+    using var cmd = connection.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = """
+        INSERT INTO vendor_results(scan_file_id, status, vendor_name, confidence)
+        VALUES($scanFileId, $status, $vendorName, $confidence);
+        """;
+    cmd.Parameters.AddWithValue("$scanFileId", scanFileId);
+    cmd.Parameters.AddWithValue("$status", status);
+    cmd.Parameters.AddWithValue("$vendorName", vendorName);
+    cmd.Parameters.AddWithValue("$confidence", confidence);
+    cmd.ExecuteNonQuery();
+}
+
+static ClassificationResult ClassifyFile(string path)
 {
     var ext = Path.GetExtension(path).ToLowerInvariant();
+
     if (ext is ".py" or ".whl")
     {
-        return ("python-artifact", "processed", null);
+        return new ClassificationResult("python-artifact", "processed", null, null);
     }
 
     if (ext is ".dll" or ".exe")
@@ -157,28 +297,82 @@ static (string FileType, string Status, string? ReasonCode) ClassifyFile(string 
         try
         {
             // Passive metadata check only: no execution of target binary.
-            _ = System.Reflection.AssemblyName.GetAssemblyName(path);
-            return ("dotnet-managed", "processed", null);
+            var assemblyName = System.Reflection.AssemblyName.GetAssemblyName(path);
+            return new ClassificationResult("dotnet-managed", "processed", null, assemblyName);
         }
         catch (BadImageFormatException)
         {
-            return ("native-or-unsupported", "partial", "unsupported-format");
+            return new ClassificationResult("native-or-unsupported", "partial", "unsupported-format", null);
         }
         catch (FileLoadException)
         {
-            return ("native-or-unsupported", "partial", "metadata-unreadable");
+            return new ClassificationResult("native-or-unsupported", "partial", "metadata-unreadable", null);
         }
         catch (IOException)
         {
-            return ("native-or-unsupported", "failed", "io-error");
+            return new ClassificationResult("native-or-unsupported", "failed", "io-error", null);
         }
         catch (UnauthorizedAccessException)
         {
-            return ("native-or-unsupported", "failed", "access-denied");
+            return new ClassificationResult("native-or-unsupported", "failed", "access-denied", null);
         }
     }
 
-    return ("ignored", "partial", "unsupported-extension");
+    return new ClassificationResult("ignored", "partial", "unsupported-extension", null);
+}
+
+static ManagedMetadata ExtractManagedMetadata(string path, ClassificationResult classification)
+{
+    var assembly = classification.AssemblyName!;
+    var token = assembly.GetPublicKeyToken();
+    var publicKeyToken = token is { Length: > 0 }
+        ? BitConverter.ToString(token).Replace("-", "").ToLowerInvariant()
+        : string.Empty;
+
+    var fileVersion = FileVersionInfo.GetVersionInfo(path);
+    var targetFramework = string.Empty;
+    var isSingleFile = false;
+    var isReadyToRun = false;
+    var isNativeAotLimited = false;
+
+    // Lightweight capability hints; deeper detection is handled in later phases.
+    if (path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(publicKeyToken))
+    {
+        isNativeAotLimited = false;
+    }
+
+    return new ManagedMetadata(
+        assembly.Name ?? Path.GetFileNameWithoutExtension(path),
+        assembly.Version?.ToString() ?? string.Empty,
+        publicKeyToken,
+        isSingleFile,
+        isReadyToRun,
+        isNativeAotLimited,
+        targetFramework,
+        fileVersion.CompanyName ?? string.Empty);
+}
+
+static IReadOnlyList<VendorEvidence> BuildVendorEvidence(string path, ManagedMetadata metadata)
+{
+    var evidence = new List<VendorEvidence>();
+
+    if (!string.IsNullOrWhiteSpace(metadata.CompanyName))
+    {
+        evidence.Add(new VendorEvidence("file-version-company", metadata.CompanyName, 60));
+    }
+
+    if (!string.IsNullOrWhiteSpace(metadata.PublicKeyToken))
+    {
+        evidence.Add(new VendorEvidence("assembly-public-key-token", metadata.PublicKeyToken, 35));
+    }
+
+    if (evidence.Count == 0)
+    {
+        var fallback = Path.GetFileNameWithoutExtension(path);
+        evidence.Add(new VendorEvidence("filename-fallback", fallback, 20));
+    }
+
+    return evidence;
 }
 
 static IEnumerable<string> EnumerateCandidateFiles(string rootPath)
@@ -232,6 +426,37 @@ static void InitializeDatabase(string dbPath)
             reason_code TEXT NOT NULL,
             FOREIGN KEY(scan_id) REFERENCES scan_jobs(scan_id)
         );
+
+        CREATE TABLE IF NOT EXISTS assembly_metadata(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_file_id INTEGER NOT NULL,
+            assembly_name TEXT NOT NULL,
+            assembly_version TEXT NOT NULL,
+            public_key_token TEXT NOT NULL,
+            is_single_file INTEGER NOT NULL,
+            is_ready_to_run INTEGER NOT NULL,
+            is_native_aot_limited INTEGER NOT NULL,
+            target_framework TEXT NOT NULL,
+            FOREIGN KEY(scan_file_id) REFERENCES scan_files(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS vendor_evidence(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_file_id INTEGER NOT NULL,
+            evidence_type TEXT NOT NULL,
+            vendor_name TEXT NOT NULL,
+            confidence INTEGER NOT NULL,
+            FOREIGN KEY(scan_file_id) REFERENCES scan_files(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS vendor_results(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_file_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            vendor_name TEXT NOT NULL,
+            confidence INTEGER NOT NULL,
+            FOREIGN KEY(scan_file_id) REFERENCES scan_files(id)
+        );
         """;
     cmd.ExecuteNonQuery();
 }
@@ -267,3 +492,24 @@ static void PrintUsage()
     Console.WriteLine("  scan --root <path> [--db <file>]");
     Console.WriteLine("  status --id <scanId> [--db <file>]");
 }
+
+internal sealed record ClassificationResult(
+    string FileType,
+    string Status,
+    string? ReasonCode,
+    System.Reflection.AssemblyName? AssemblyName);
+
+internal sealed record ManagedMetadata(
+    string AssemblyName,
+    string AssemblyVersion,
+    string PublicKeyToken,
+    bool IsSingleFile,
+    bool IsReadyToRun,
+    bool IsNativeAotLimited,
+    string TargetFramework,
+    string CompanyName);
+
+internal sealed record VendorEvidence(
+    string EvidenceType,
+    string VendorName,
+    int Confidence);
