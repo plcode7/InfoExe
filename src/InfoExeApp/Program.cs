@@ -16,6 +16,8 @@ return command switch
 {
     "scan" => RunScan(args, dbPath),
     "status" => RunStatus(args, dbPath),
+    "retry" => RunRetry(args, dbPath),
+    "export" => RunExport(args, dbPath),
     _ => UnknownCommand(command)
 };
 
@@ -41,19 +43,30 @@ static int RunScan(string[] args, string dbPath)
 
     InsertScanJob(connection, tx, scanId, absoluteRoot);
 
-    foreach (var file in EnumerateCandidateFiles(absoluteRoot))
+    var includePython = HasFlag(args, "--include-python");
+    foreach (var file in EnumerateCandidateFiles(absoluteRoot, includePython))
     {
         var classification = ClassifyFile(file);
         var scanFileId = InsertScanFile(connection, tx, scanId, file, classification);
 
-        if (classification.FileType == "dotnet-managed")
+        if (classification.FileType != "dotnet-managed")
         {
-            var metadata = ExtractManagedMetadata(file, classification);
-            InsertAssemblyMetadata(connection, tx, scanFileId, metadata);
+            continue;
+        }
 
-            var evidence = BuildVendorEvidence(file, metadata);
-            InsertVendorEvidence(connection, tx, scanFileId, evidence);
-            InsertVendorResult(connection, tx, scanFileId, evidence);
+        var metadata = ExtractManagedMetadata(file, classification);
+        InsertAssemblyMetadata(connection, tx, scanFileId, metadata);
+
+        var evidence = BuildVendorEvidence(file, metadata);
+        InsertVendorEvidence(connection, tx, scanFileId, evidence);
+        InsertVendorResult(connection, tx, scanFileId, evidence);
+
+        var decompileResult = AttemptDecompile(file, scanId, scanFileId);
+        InsertDecompileResult(connection, tx, scanFileId, decompileResult);
+
+        if (decompileResult.Status != "decompiled")
+        {
+            MarkPartialWithReason(connection, tx, scanFileId, decompileResult.ReasonCode);
         }
     }
 
@@ -107,7 +120,6 @@ static int RunStatus(string[] args, string dbPath)
         WHERE scan_id = $scanId;
         """;
     statsCmd.Parameters.AddWithValue("$scanId", scanId);
-
     using var statsReader = statsCmd.ExecuteReader();
     if (statsReader.Read())
     {
@@ -117,31 +129,194 @@ static int RunStatus(string[] args, string dbPath)
         Console.WriteLine($"failed: {statsReader.GetInt64(3)}");
     }
 
-    using var metaCmd = connection.CreateCommand();
-    metaCmd.CommandText = """
-        SELECT COUNT(*)
-        FROM assembly_metadata m
+    Console.WriteLine($"managedMetadata: {ScalarLong(connection, """
+        SELECT COUNT(*) FROM assembly_metadata m
         JOIN scan_files f ON f.id = m.scan_file_id
         WHERE f.scan_id = $scanId;
-        """;
-    metaCmd.Parameters.AddWithValue("$scanId", scanId);
-    Console.WriteLine($"managedMetadata: {Convert.ToInt64(metaCmd.ExecuteScalar())}");
+        """, scanId)}");
 
-    using var vendorCmd = connection.CreateCommand();
-    vendorCmd.CommandText = """
-        SELECT
-            SUM(CASE WHEN vr.status = 'attributed' THEN 1 ELSE 0 END),
-            SUM(CASE WHEN vr.status = 'inconclusive' THEN 1 ELSE 0 END)
+    Console.WriteLine($"vendorAttributed: {ScalarLong(connection, """
+        SELECT SUM(CASE WHEN vr.status = 'attributed' THEN 1 ELSE 0 END)
         FROM vendor_results vr
         JOIN scan_files f ON f.id = vr.scan_file_id
         WHERE f.scan_id = $scanId;
-        """;
-    vendorCmd.Parameters.AddWithValue("$scanId", scanId);
-    using var vendorReader = vendorCmd.ExecuteReader();
-    if (vendorReader.Read())
+        """, scanId)}");
+
+    Console.WriteLine($"vendorInconclusive: {ScalarLong(connection, """
+        SELECT SUM(CASE WHEN vr.status = 'inconclusive' THEN 1 ELSE 0 END)
+        FROM vendor_results vr
+        JOIN scan_files f ON f.id = vr.scan_file_id
+        WHERE f.scan_id = $scanId;
+        """, scanId)}");
+
+    Console.WriteLine($"decompiled: {ScalarLong(connection, """
+        SELECT SUM(CASE WHEN d.status = 'decompiled' THEN 1 ELSE 0 END)
+        FROM decompilation_results d
+        JOIN scan_files f ON f.id = d.scan_file_id
+        WHERE f.scan_id = $scanId;
+        """, scanId)}");
+
+    return 0;
+}
+
+static int RunRetry(string[] args, string dbPath)
+{
+    var scanId = GetOption(args, "--id");
+    if (string.IsNullOrWhiteSpace(scanId))
     {
-        Console.WriteLine($"vendorAttributed: {vendorReader.GetInt64(0)}");
-        Console.WriteLine($"vendorInconclusive: {vendorReader.GetInt64(1)}");
+        Console.Error.WriteLine("Missing required option: --id <scanId>");
+        return 2;
+    }
+
+    using var connection = OpenConnection(dbPath);
+    using var query = connection.CreateCommand();
+    query.CommandText = """
+        SELECT id, file_path, retry_count
+        FROM scan_files
+        WHERE scan_id = $scanId
+          AND file_type = 'dotnet-managed'
+          AND status IN ('partial','failed')
+          AND retry_count < 3;
+        """;
+    query.Parameters.AddWithValue("$scanId", scanId);
+
+    var candidates = new List<(long Id, string Path, long RetryCount)>();
+    using (var reader = query.ExecuteReader())
+    {
+        while (reader.Read())
+        {
+            candidates.Add((reader.GetInt64(0), reader.GetString(1), reader.GetInt64(2)));
+        }
+    }
+
+    if (candidates.Count == 0)
+    {
+        Console.WriteLine("No retry candidates.");
+        return 0;
+    }
+
+    using var tx = connection.BeginTransaction();
+    var retried = 0;
+    foreach (var candidate in candidates)
+    {
+        var result = AttemptDecompile(candidate.Path, scanId, candidate.Id);
+        UpsertDecompileResult(connection, tx, candidate.Id, result);
+
+        using var update = connection.CreateCommand();
+        update.Transaction = tx;
+        update.CommandText = """
+            UPDATE scan_files
+            SET status = $status,
+                reason_code = $reason,
+                retry_count = retry_count + 1
+            WHERE id = $id;
+            """;
+        update.Parameters.AddWithValue("$status", result.Status == "decompiled" ? "processed" : "partial");
+        update.Parameters.AddWithValue("$reason", result.ReasonCode ?? string.Empty);
+        update.Parameters.AddWithValue("$id", candidate.Id);
+        update.ExecuteNonQuery();
+        retried++;
+    }
+
+    tx.Commit();
+    Console.WriteLine($"retried: {retried}");
+    return 0;
+}
+
+static int RunExport(string[] args, string dbPath)
+{
+    var scanId = GetOption(args, "--id");
+    if (string.IsNullOrWhiteSpace(scanId))
+    {
+        Console.Error.WriteLine("Missing required option: --id <scanId>");
+        return 2;
+    }
+
+    var formatArg = (GetOption(args, "--format") ?? "json").ToLowerInvariant();
+    var formats = formatArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var outputArg = GetOption(args, "--output") ?? Path.Combine(Environment.CurrentDirectory, "artifacts", "reports");
+    var outputPath = Path.GetFullPath(outputArg);
+
+    using var connection = OpenConnection(dbPath);
+    var items = new List<ExportRow>();
+    using (var cmd = connection.CreateCommand())
+    {
+        cmd.CommandText = """
+            SELECT
+                f.file_path,
+                f.file_type,
+                f.status,
+                f.reason_code,
+                f.retry_count,
+                COALESCE(m.assembly_name, ''),
+                COALESCE(m.assembly_version, ''),
+                COALESCE(m.public_key_token, ''),
+                COALESCE(vr.vendor_name, ''),
+                COALESCE(vr.status, ''),
+                COALESCE(vr.confidence, 0),
+                COALESCE(d.status, ''),
+                COALESCE(d.artifact_path, ''),
+                COALESCE(d.reason_code, '')
+            FROM scan_files f
+            LEFT JOIN assembly_metadata m ON m.scan_file_id = f.id
+            LEFT JOIN vendor_results vr ON vr.scan_file_id = f.id
+            LEFT JOIN decompilation_results d ON d.scan_file_id = f.id
+            WHERE f.scan_id = $scanId
+            ORDER BY f.id;
+            """;
+        cmd.Parameters.AddWithValue("$scanId", scanId);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            items.Add(new ExportRow(
+                reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4),
+                reader.GetString(5), reader.GetString(6), reader.GetString(7),
+                reader.GetString(8), reader.GetString(9), reader.GetInt64(10),
+                reader.GetString(11), reader.GetString(12), reader.GetString(13)));
+        }
+    }
+
+    if (items.Count == 0)
+    {
+        Console.Error.WriteLine($"No files found for scanId: {scanId}");
+        return 3;
+    }
+
+    var writes = 0;
+    foreach (var format in formats)
+    {
+        if (format == "json")
+        {
+            var path = ResolveOutputFile(outputPath, formats.Length > 1, $"{scanId}.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var payload = new { scanId, generatedAtUtc = DateTime.UtcNow.ToString("O"), items };
+            File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(payload, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            Console.WriteLine($"exportJson: {path}");
+            writes++;
+        }
+        else if (format == "csv")
+        {
+            var path = ResolveOutputFile(outputPath, formats.Length > 1, $"{scanId}.csv");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            using var sw = new StreamWriter(path, false);
+            sw.WriteLine("file_path,file_type,status,reason_code,retry_count,assembly_name,assembly_version,public_key_token,vendor_name,vendor_status,vendor_confidence,decompile_status,decompile_artifact,decompile_reason");
+            foreach (var row in items)
+            {
+                sw.WriteLine(string.Join(',',
+                    Csv(row.FilePath), Csv(row.FileType), Csv(row.Status), Csv(row.ReasonCode), row.RetryCount,
+                    Csv(row.AssemblyName), Csv(row.AssemblyVersion), Csv(row.PublicKeyToken),
+                    Csv(row.VendorName), Csv(row.VendorStatus), row.VendorConfidence,
+                    Csv(row.DecompileStatus), Csv(row.DecompileArtifactPath), Csv(row.DecompileReason)));
+            }
+            Console.WriteLine($"exportCsv: {path}");
+            writes++;
+        }
+    }
+
+    if (writes == 0)
+    {
+        Console.Error.WriteLine("Unsupported format. Use: json, csv, or json,csv");
+        return 2;
     }
 
     return 0;
@@ -185,8 +360,8 @@ static long InsertScanFile(
     using var cmd = connection.CreateCommand();
     cmd.Transaction = tx;
     cmd.CommandText = """
-        INSERT INTO scan_files(scan_id, file_path, file_type, status, reason_code)
-        VALUES($scanId, $filePath, $fileType, $status, $reasonCode);
+        INSERT INTO scan_files(scan_id, file_path, file_type, status, reason_code, retry_count)
+        VALUES($scanId, $filePath, $fileType, $status, $reasonCode, 0);
         SELECT last_insert_rowid();
         """;
     cmd.Parameters.AddWithValue("$scanId", scanId);
@@ -254,15 +429,10 @@ static void InsertVendorResult(
     long scanFileId,
     IReadOnlyList<VendorEvidence> evidenceList)
 {
-    var distinctVendors = evidenceList
-        .Select(e => e.VendorName)
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToList();
-
+    var distinctVendors = evidenceList.Select(e => e.VendorName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     var status = "inconclusive";
     var vendorName = "inconclusive";
     var confidence = 0;
-
     if (distinctVendors.Count == 1)
     {
         status = "attributed";
@@ -283,10 +453,58 @@ static void InsertVendorResult(
     cmd.ExecuteNonQuery();
 }
 
+static void InsertDecompileResult(SqliteConnection connection, SqliteTransaction tx, long scanFileId, DecompileResult result)
+{
+    using var cmd = connection.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = """
+        INSERT INTO decompilation_results(scan_file_id, status, artifact_path, reason_code)
+        VALUES($scanFileId, $status, $artifact, $reason);
+        """;
+    cmd.Parameters.AddWithValue("$scanFileId", scanFileId);
+    cmd.Parameters.AddWithValue("$status", result.Status);
+    cmd.Parameters.AddWithValue("$artifact", result.ArtifactPath);
+    cmd.Parameters.AddWithValue("$reason", result.ReasonCode ?? string.Empty);
+    cmd.ExecuteNonQuery();
+}
+
+static void UpsertDecompileResult(SqliteConnection connection, SqliteTransaction tx, long scanFileId, DecompileResult result)
+{
+    using var cmd = connection.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = """
+        UPDATE decompilation_results
+        SET status = $status, artifact_path = $artifact, reason_code = $reason
+        WHERE scan_file_id = $scanFileId;
+
+        INSERT INTO decompilation_results(scan_file_id, status, artifact_path, reason_code)
+        SELECT $scanFileId, $status, $artifact, $reason
+        WHERE NOT EXISTS(SELECT 1 FROM decompilation_results WHERE scan_file_id = $scanFileId);
+        """;
+    cmd.Parameters.AddWithValue("$scanFileId", scanFileId);
+    cmd.Parameters.AddWithValue("$status", result.Status);
+    cmd.Parameters.AddWithValue("$artifact", result.ArtifactPath);
+    cmd.Parameters.AddWithValue("$reason", result.ReasonCode ?? string.Empty);
+    cmd.ExecuteNonQuery();
+}
+
+static void MarkPartialWithReason(SqliteConnection connection, SqliteTransaction tx, long scanFileId, string? reasonCode)
+{
+    using var cmd = connection.CreateCommand();
+    cmd.Transaction = tx;
+    cmd.CommandText = """
+        UPDATE scan_files
+        SET status = 'partial', reason_code = $reason
+        WHERE id = $id;
+        """;
+    cmd.Parameters.AddWithValue("$reason", reasonCode ?? string.Empty);
+    cmd.Parameters.AddWithValue("$id", scanFileId);
+    cmd.ExecuteNonQuery();
+}
+
 static ClassificationResult ClassifyFile(string path)
 {
     var ext = Path.GetExtension(path).ToLowerInvariant();
-
     if (ext is ".py" or ".whl")
     {
         return new ClassificationResult("python-artifact", "processed", null, null);
@@ -296,7 +514,6 @@ static ClassificationResult ClassifyFile(string path)
     {
         try
         {
-            // Passive metadata check only: no execution of target binary.
             var assemblyName = System.Reflection.AssemblyName.GetAssemblyName(path);
             return new ClassificationResult("dotnet-managed", "processed", null, assemblyName);
         }
@@ -325,67 +542,109 @@ static ManagedMetadata ExtractManagedMetadata(string path, ClassificationResult 
 {
     var assembly = classification.AssemblyName!;
     var token = assembly.GetPublicKeyToken();
-    var publicKeyToken = token is { Length: > 0 }
-        ? BitConverter.ToString(token).Replace("-", "").ToLowerInvariant()
-        : string.Empty;
-
-    var fileVersion = FileVersionInfo.GetVersionInfo(path);
-    var targetFramework = string.Empty;
-    var isSingleFile = false;
-    var isReadyToRun = false;
-    var isNativeAotLimited = false;
-
-    // Lightweight capability hints; deeper detection is handled in later phases.
-    if (path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(publicKeyToken))
-    {
-        isNativeAotLimited = false;
-    }
+    var publicKeyToken = token is { Length: > 0 } ? BitConverter.ToString(token).Replace("-", "").ToLowerInvariant() : string.Empty;
+    var companyName = FileVersionInfo.GetVersionInfo(path).CompanyName ?? string.Empty;
 
     return new ManagedMetadata(
         assembly.Name ?? Path.GetFileNameWithoutExtension(path),
         assembly.Version?.ToString() ?? string.Empty,
         publicKeyToken,
-        isSingleFile,
-        isReadyToRun,
-        isNativeAotLimited,
-        targetFramework,
-        fileVersion.CompanyName ?? string.Empty);
+        false,
+        false,
+        false,
+        string.Empty,
+        companyName);
 }
 
 static IReadOnlyList<VendorEvidence> BuildVendorEvidence(string path, ManagedMetadata metadata)
 {
     var evidence = new List<VendorEvidence>();
-
     if (!string.IsNullOrWhiteSpace(metadata.CompanyName))
     {
         evidence.Add(new VendorEvidence("file-version-company", metadata.CompanyName, 60));
     }
-
     if (!string.IsNullOrWhiteSpace(metadata.PublicKeyToken))
     {
         evidence.Add(new VendorEvidence("assembly-public-key-token", metadata.PublicKeyToken, 35));
     }
-
     if (evidence.Count == 0)
     {
-        var fallback = Path.GetFileNameWithoutExtension(path);
-        evidence.Add(new VendorEvidence("filename-fallback", fallback, 20));
+        evidence.Add(new VendorEvidence("filename-fallback", Path.GetFileNameWithoutExtension(path), 20));
     }
 
     return evidence;
 }
 
-static IEnumerable<string> EnumerateCandidateFiles(string rootPath)
+static DecompileResult AttemptDecompile(string filePath, string scanId, long scanFileId)
 {
-    var allowedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    var outDir = Path.Combine(Environment.CurrentDirectory, "artifacts", "decompiled", scanId, scanFileId.ToString());
+    Directory.CreateDirectory(outDir);
+
+    var ilspyPath = FindExecutable("ilspycmd");
+    if (ilspyPath is null)
     {
-        ".dll", ".exe", ".py", ".whl"
+        var notePath = Path.Combine(outDir, "decompile-note.txt");
+        File.WriteAllText(notePath, "ilspycmd not found; decompilation deferred.");
+        return new DecompileResult("partial", notePath, "decompile-tool-missing");
+    }
+
+    var psi = new ProcessStartInfo
+    {
+        FileName = ilspyPath,
+        Arguments = $"--disable-updatecheck -p -o \"{outDir}\" \"{filePath}\"",
+        UseShellExecute = false,
+        RedirectStandardError = true,
+        RedirectStandardOutput = true
     };
 
+    using var process = Process.Start(psi);
+    if (process is null)
+    {
+        return new DecompileResult("partial", outDir, "decompile-start-failed");
+    }
+
+    if (!process.WaitForExit(60000))
+    {
+        process.Kill(true);
+        return new DecompileResult("partial", outDir, "decompile-timeout");
+    }
+
+    return process.ExitCode == 0
+        ? new DecompileResult("decompiled", outDir, null)
+        : new DecompileResult("partial", outDir, "decompile-failed");
+}
+
+static string? FindExecutable(string commandName)
+{
+    var pathValue = Environment.GetEnvironmentVariable("PATH");
+    if (string.IsNullOrWhiteSpace(pathValue))
+    {
+        return null;
+    }
+
+    foreach (var path in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+    {
+        var candidate = Path.Combine(path.Trim(), $"{commandName}.exe");
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
+static IEnumerable<string> EnumerateCandidateFiles(string rootPath, bool includePython)
+{
+    var allowedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".dll", ".exe" };
+    if (includePython)
+    {
+        allowedExtensions.Add(".py");
+        allowedExtensions.Add(".whl");
+    }
     foreach (var file in Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories))
     {
-        var ext = Path.GetExtension(file);
-        if (allowedExtensions.Contains(ext))
+        if (allowedExtensions.Contains(Path.GetExtension(file)))
         {
             yield return file;
         }
@@ -394,11 +653,7 @@ static IEnumerable<string> EnumerateCandidateFiles(string rootPath)
 
 static SqliteConnection OpenConnection(string dbPath)
 {
-    var builder = new SqliteConnectionStringBuilder
-    {
-        DataSource = dbPath,
-        Mode = SqliteOpenMode.ReadWriteCreate
-    };
+    var builder = new SqliteConnectionStringBuilder { DataSource = dbPath, Mode = SqliteOpenMode.ReadWriteCreate };
     var connection = new SqliteConnection(builder.ToString());
     connection.Open();
     return connection;
@@ -424,6 +679,7 @@ static void InitializeDatabase(string dbPath)
             file_type TEXT NOT NULL,
             status TEXT NOT NULL,
             reason_code TEXT NOT NULL,
+            retry_count INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(scan_id) REFERENCES scan_jobs(scan_id)
         );
 
@@ -457,25 +713,43 @@ static void InitializeDatabase(string dbPath)
             confidence INTEGER NOT NULL,
             FOREIGN KEY(scan_file_id) REFERENCES scan_files(id)
         );
+
+        CREATE TABLE IF NOT EXISTS decompilation_results(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_file_id INTEGER NOT NULL UNIQUE,
+            status TEXT NOT NULL,
+            artifact_path TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            FOREIGN KEY(scan_file_id) REFERENCES scan_files(id)
+        );
         """;
     cmd.ExecuteNonQuery();
+}
+
+static long ScalarLong(SqliteConnection connection, string sql, string scanId)
+{
+    using var cmd = connection.CreateCommand();
+    cmd.CommandText = sql;
+    cmd.Parameters.AddWithValue("$scanId", scanId);
+    var value = cmd.ExecuteScalar();
+    return value is null or DBNull ? 0 : Convert.ToInt64(value);
 }
 
 static string? GetOption(string[] args, string optionName)
 {
     for (var i = 0; i < args.Length; i++)
     {
-        if (string.Equals(args[i], optionName, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(args[i], optionName, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
         {
-            var next = i + 1;
-            if (next < args.Length)
-            {
-                return args[next];
-            }
+            return args[i + 1];
         }
     }
-
     return null;
+}
+
+static bool HasFlag(string[] args, string flag)
+{
+    return args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
 }
 
 static int UnknownCommand(string command)
@@ -489,27 +763,34 @@ static void PrintUsage()
 {
     Console.WriteLine("InfoExe CLI");
     Console.WriteLine("Usage:");
-    Console.WriteLine("  scan --root <path> [--db <file>]");
+    Console.WriteLine("  scan --root <path> [--include-python] [--db <file>]");
     Console.WriteLine("  status --id <scanId> [--db <file>]");
+    Console.WriteLine("  retry --id <scanId> [--db <file>]");
+    Console.WriteLine("  export --id <scanId> [--format json|csv|json,csv] [--output <path>]");
 }
 
-internal sealed record ClassificationResult(
-    string FileType,
-    string Status,
-    string? ReasonCode,
-    System.Reflection.AssemblyName? AssemblyName);
+static string ResolveOutputFile(string outputPath, bool forceDirectory, string defaultFileName)
+{
+    if (forceDirectory || Directory.Exists(outputPath) || !Path.HasExtension(outputPath))
+    {
+        return Path.Combine(outputPath, defaultFileName);
+    }
 
-internal sealed record ManagedMetadata(
-    string AssemblyName,
-    string AssemblyVersion,
-    string PublicKeyToken,
-    bool IsSingleFile,
-    bool IsReadyToRun,
-    bool IsNativeAotLimited,
-    string TargetFramework,
-    string CompanyName);
+    return outputPath;
+}
 
-internal sealed record VendorEvidence(
-    string EvidenceType,
-    string VendorName,
-    int Confidence);
+static string Csv(string value)
+{
+    var escaped = value.Replace("\"", "\"\"");
+    return $"\"{escaped}\"";
+}
+
+internal sealed record ClassificationResult(string FileType, string Status, string? ReasonCode, System.Reflection.AssemblyName? AssemblyName);
+internal sealed record ManagedMetadata(string AssemblyName, string AssemblyVersion, string PublicKeyToken, bool IsSingleFile, bool IsReadyToRun, bool IsNativeAotLimited, string TargetFramework, string CompanyName);
+internal sealed record VendorEvidence(string EvidenceType, string VendorName, int Confidence);
+internal sealed record DecompileResult(string Status, string ArtifactPath, string? ReasonCode);
+internal sealed record ExportRow(
+    string FilePath, string FileType, string Status, string ReasonCode, long RetryCount,
+    string AssemblyName, string AssemblyVersion, string PublicKeyToken,
+    string VendorName, string VendorStatus, long VendorConfidence,
+    string DecompileStatus, string DecompileArtifactPath, string DecompileReason);

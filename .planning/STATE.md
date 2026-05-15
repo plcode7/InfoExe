@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-05-15)
 
 **Core value:** Użytkownik może bezpiecznie i offline uzyskać wiarygodny, powtarzalny raport o składzie i pochodzeniu aplikacji .NET oraz dekompilowane źródła.  
-**Current focus:** Phase 3 — Decompilation & Reliability
+**Current focus:** Lifecycle — Audit & Complete Milestone
 
 ## Milestone Status
 
@@ -17,4 +17,4 @@ See: .planning/PROJECT.md (updated 2026-05-15)
 
 ## Next Action
 
-- Auto chain target: `/gsd-discuss-phase 3 --auto`
+- Auto chain target: `/gsd-audit-milestone` then `/gsd-complete-milestone`
