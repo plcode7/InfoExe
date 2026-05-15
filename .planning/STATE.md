@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-05-15)
 
 **Core value:** Użytkownik może bezpiecznie i offline uzyskać wiarygodny, powtarzalny raport o składzie i pochodzeniu aplikacji .NET oraz dekompilowane źródła.  
-**Current focus:** Phase 1 — Foundations & Scan Engine
+**Current focus:** Phase 2 — Metadata & Vendor Attribution
 
 ## Milestone Status
 
@@ -17,4 +17,4 @@ See: .planning/PROJECT.md (updated 2026-05-15)
 
 ## Next Action
 
-- Auto chain target: `/gsd-discuss-phase 1 --auto`
+- Auto chain target: `/gsd-discuss-phase 2 --auto`
