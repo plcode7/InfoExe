@@ -33,6 +33,16 @@ Użytkownik może bezpiecznie i offline uzyskać wiarygodny, powtarzalny raport 
 - Automatyczne omijanie DRM/ochron licencyjnych — poza zakresem legalnym
 - PDF export — kompleksowa biblioteka + wersjonowanie
 
+## Current Milestone: v1.1 Samodzielna aplikacja z auto-konfiguracją
+
+**Goal:** Aplikacja Avalonia działa w pełni samodzielnie — po `git clone` użytkownik uruchamia `setup.ps1`, który pobiera ILSpy, instaluje zależności, konfiguruje środowisko. GUI obsługuje wszystko w procesie (bez zewnętrznego CLI).
+
+**Target features:**
+- Skrypt `setup.ps1` pobierający i konfigurujący ILSpy, .NET SDK, NuGet, SQLite
+- Wbudowana logika skanowania/analizy w GUI (brak zależności od InfoExeApp.exe)
+- Progress bar i live output podczas skanowania i analizy
+- Automatyczne wykrywanie i konfiguracja ścieżek do narzędzi
+
 ## Context
 
 **Current state (v1.0 shipped):**
@@ -67,4 +77,4 @@ Użytkownik może bezpiecznie i offline uzyskać wiarygodny, powtarzalny raport 
 This document evolves at phase transitions and milestone boundaries.
 
 ---
-*Last updated: 2026-05-16 after v1.0 milestone completion*
+*Last updated: 2026-05-16 — v1.1 milestone started*
