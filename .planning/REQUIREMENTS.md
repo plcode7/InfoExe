@@ -42,15 +42,15 @@
 
 | REQ-ID | Phase | Status |
 |--------|-------|--------|
-| SETUP-01 | — | Not started |
-| SETUP-02 | — | Not started |
-| SETUP-03 | — | Not started |
-| SETUP-04 | — | Not started |
-| GUI-11 | — | Not started |
-| GUI-12 | — | Not started |
-| GUI-13 | — | Not started |
-| GUI-14 | — | Not started |
-| GUI-15 | — | Not started |
-| TOOLS-01 | — | Not started |
-| TOOLS-02 | — | Not started |
-| TOOLS-03 | — | Not started |
+| SETUP-01 | Phase 8 | Not started |
+| SETUP-02 | Phase 8 | Not started |
+| SETUP-03 | Phase 8 | Not started |
+| SETUP-04 | Phase 8 | Not started |
+| GUI-11 | Phase 9 | Not started |
+| GUI-12 | Phase 9 | Not started |
+| GUI-13 | Phase 9 | Not started |
+| GUI-14 | Phase 9 | Not started |
+| GUI-15 | Phase 9 | Not started |
+| TOOLS-01 | Phase 9 | Not started |
+| TOOLS-02 | Phase 9 | Not started |
+| TOOLS-03 | Phase 9 | Not started |
