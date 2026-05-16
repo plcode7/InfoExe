@@ -75,3 +75,19 @@ Success criteria:
 - v1 requirements: 19
 - mapped: 19
 - unmapped: 0
+
+### Phase 6: Dodaj osobny projekt GUI Avalonia dla Windows do zarządzania parametrami InfoExe, współpracujący z CLI lub działający samodzielnie
+
+**Goal:** Polish and fix the existing InfoExeGui companion app: create a unified solution file, upgrade Avalonia to 11.3.x, and fix the CLI-path auto-discovery bug so the GUI is ready for daily use.
+**Requirements**: GUI-01, GUI-02, GUI-03
+**Depends on:** Phase 5
+**Plans:** 2 plans
+
+Requirements:
+- GUI-01: Unified `src/InfoExe.sln` containing both InfoExeApp and InfoExeGui projects
+- GUI-02: Avalonia packages at 11.3.15 with a clean build (no NU1903 advisory warning)
+- GUI-03: `ResolveDefaultCliPath` correctly resolves InfoExeApp.exe in both dev-layout (4-level relative path) and xcopy-install-layout (same folder as GUI exe)
+
+Plans:
+- [ ] 06-01-PLAN.md — Create InfoExe.sln + upgrade Avalonia 11.2.0 → 11.3.15 + suppress NU1903
+- [ ] 06-02-PLAN.md — Fix ResolveDefaultCliPath (5→4 levels + xcopy probe) + smoke-test checkpoint
