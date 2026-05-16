@@ -91,3 +91,22 @@ Requirements:
 Plans:
 - [ ] 06-01-PLAN.md — Create InfoExe.sln + upgrade Avalonia 11.2.0 → 11.3.15 + suppress NU1903
 - [ ] 06-02-PLAN.md — Fix ResolveDefaultCliPath (5→4 levels + xcopy probe) + smoke-test checkpoint
+
+### Phase 7: Analiza i raportowanie aplikacji .NET (CLI + GUI)
+
+**Goal:** Add comprehensive analysis and reporting to InfoExe: new `analyze` command generating MD+HTML reports of assemblies, DLLs, dependencies, and encoding; extend GUI to configure and preview analysis reports.
+**Requirements**: ANALYZE-01, ANALYZE-02, ANALYZE-03, ANALYZE-04, ANALYZE-05
+**Depends on:** Phase 6
+**Plans:** 3 plans
+
+Requirements:
+- ANALYZE-01: New `analyze` command generates structured analysis of a completed scan
+- ANALYZE-02: Reports include assembly metadata (name, version, target framework, references, signing)
+- ANALYZE-03: Reports include dependency graph and encoding detection
+- ANALYZE-04: Report output formats: Markdown (auto-linked) and HTML (browser-viewable)
+- ANALYZE-05: GUI form to select scan, configure report options, and preview/open generated reports
+
+Plans:
+- [ ] 07-01-PLAN.md — Design report data model and schema extensions
+- [ ] 07-02-PLAN.md — Implement `analyze` command with MD/HTML generation
+- [ ] 07-03-PLAN.md — Extend GUI with report preview and generation UI

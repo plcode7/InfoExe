@@ -1,0 +1,98 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        x:Class="InfoExeGui.MainWindow"
+        Width="980" Height="780"
+        Title="InfoExe GUI">
+  <ScrollViewer>
+    <StackPanel Margin="20" Spacing="16">
+      <TextBlock Text="InfoExe GUI" FontSize="26" FontWeight="SemiBold" />
+      <TextBlock Text="Prosty formularz do ustawiania parametrów skanu i uruchamiania CLI." Opacity="0.8" />
+
+      <Border Padding="16" CornerRadius="10" BorderThickness="1" BorderBrush="#3A3A3A">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Ścieżka do CLI" FontWeight="SemiBold" />
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBox x:Name="CliPathBox" Grid.Column="0" Margin="0,0,10,0" Watermark="InfoExeApp.exe" />
+            <Button Grid.Column="1" Content="Przeglądaj..." Click="BrowseCli_Click" />
+          </Grid>
+
+          <TextBlock Text="Baza danych" FontWeight="SemiBold" />
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBox x:Name="DbPathBox" Grid.Column="0" Margin="0,0,10,0" Watermark="infoexe.db" />
+            <Button Grid.Column="1" Content="Wybierz..." Click="BrowseDb_Click" />
+          </Grid>
+        </StackPanel>
+      </Border>
+
+      <Border Padding="16" CornerRadius="10" BorderThickness="1" BorderBrush="#3A3A3A">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Parametry skanu" FontWeight="SemiBold" />
+
+          <TextBlock Text="Katalog do skanowania" />
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBox x:Name="RootPathBox" Grid.Column="0" Margin="0,0,10,0" Watermark="C:\\Apps\\MyApp" TextChanged="TextFieldChanged" />
+            <Button Grid.Column="1" Content="Wybierz katalog..." Click="BrowseRoot_Click" />
+          </Grid>
+
+          <TextBlock Text="Nazwa programu" />
+          <TextBox x:Name="ProgramNameBox" Watermark="MyApp" TextChanged="TextFieldChanged" />
+
+          <TextBlock Text="Ścieżka do przeszukania" />
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBox x:Name="SearchPathBox" Grid.Column="0" Margin="0,0,10,0" Watermark="pusty = cały katalog" TextChanged="TextFieldChanged" />
+            <Button Grid.Column="1" Content="Wybierz katalog..." Click="BrowseSearch_Click" />
+          </Grid>
+
+          <TextBlock Text="Parametry programu" />
+          <TextBox x:Name="ProgramArgsBox" Watermark="--mode quick" TextChanged="TextFieldChanged" />
+
+          <CheckBox x:Name="IncludePythonBox" Content="Uwzględnij Python (.py, .whl)" IsChecked="False" Checked="OptionChanged" Unchecked="OptionChanged" />
+        </StackPanel>
+      </Border>
+
+      <Border Padding="16" CornerRadius="10" BorderThickness="1" BorderBrush="#3A3A3A">
+        <StackPanel Spacing="10">
+          <TextBlock Text="Podgląd komendy" FontWeight="SemiBold" />
+          <TextBox x:Name="PreviewBox" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="70" />
+        </StackPanel>
+      </Border>
+
+      <StackPanel Orientation="Horizontal" Spacing="10">
+        <Button x:Name="RunButton" Content="Uruchom skan" Click="RunScan_Click" />
+        <Button x:Name="HelpButton" Content="Pokaż help CLI" Click="Help_Click" />
+      </StackPanel>
+
+      <Border Padding="16" CornerRadius="10" BorderThickness="1" BorderBrush="#3A3A3A">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Generuj raport analizy" FontWeight="SemiBold" />
+
+          <TextBlock Text="Wybierz skan" />
+          <ComboBox x:Name="ScanIdCombo" Watermark="Ładowanie skanów..." />
+
+          <TextBlock Text="Format raportu" />
+          <StackPanel Orientation="Horizontal" Spacing="15">
+            <RadioButton x:Name="FormatMd" Content="Markdown (.md)" IsChecked="True" GroupName="reportFormat" />
+            <RadioButton x:Name="FormatHtml" Content="HTML (.html)" GroupName="reportFormat" />
+          </StackPanel>
+
+          <TextBlock Text="Folder wyjściowy" />
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBox x:Name="ReportOutputBox" Grid.Column="0" Margin="0,0,10,0" Watermark="./reports" />
+            <Button Grid.Column="1" Content="Wybierz..." Click="BrowseReportOutput_Click" />
+          </Grid>
+
+          <Button x:Name="GenerateReportButton" Content="Generuj raport" Click="GenerateReport_Click" />
+        </StackPanel>
+      </Border>
+
+      <StackPanel Spacing="8">
+        <ProgressBar x:Name="BusyBar" IsIndeterminate="True" IsVisible="False" Height="8" />
+        <TextBlock x:Name="StatusText" Text="Gotowe" />
+          <TextBox x:Name="OutputBox" MinHeight="280" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" />
+        </StackPanel>
+      </StackPanel>
+  </ScrollViewer>
+</Window>
