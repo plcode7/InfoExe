@@ -70,7 +70,7 @@
           <TextBlock Text="Generuj raport analizy" FontWeight="SemiBold" />
 
           <TextBlock Text="Wybierz skan" />
-          <ComboBox x:Name="ScanIdCombo" Watermark="Ładowanie skanów..." />
+          <ComboBox x:Name="ScanIdCombo" />
 
           <TextBlock Text="Format raportu" />
           <StackPanel Orientation="Horizontal" Spacing="15">
@@ -85,6 +85,11 @@
           </Grid>
 
           <Button x:Name="GenerateReportButton" Content="Generuj raport" Click="GenerateReport_Click" />
+          <StackPanel Orientation="Horizontal" Spacing="10" x:Name="ReportActionsPanel" IsVisible="False">
+            <Button x:Name="OpenReportBtn" Content="Otworz raport" Click="OpenReport_Click" />
+            <Button x:Name="OpenExplorerBtn" Content="Otworz w Explorer" Click="OpenExplorer_Click" />
+            <Button x:Name="OpenBrowserBtn" Content="Otworz w przegladarce" Click="OpenBrowser_Click" IsVisible="False" />
+          </StackPanel>
         </StackPanel>
       </Border>
 

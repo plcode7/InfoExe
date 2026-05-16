@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 
 var dbPath = GetOption(args, "--db") ?? Path.Combine(Environment.CurrentDirectory, "infoexe.db");
@@ -965,6 +967,23 @@ static void InitializeDatabase(string dbPath)
             status TEXT NOT NULL,
             FOREIGN KEY(scan_id) REFERENCES scan_jobs(scan_id)
         );
+
+        CREATE TABLE IF NOT EXISTS assembly_references(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_file_id INTEGER NOT NULL,
+            referenced_assembly_name TEXT NOT NULL,
+            referenced_version TEXT NOT NULL,
+            FOREIGN KEY(scan_file_id) REFERENCES scan_files(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS license_detections(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_file_id INTEGER NOT NULL,
+            license_type TEXT NOT NULL,
+            confidence INTEGER NOT NULL,
+            source_path TEXT NOT NULL,
+            FOREIGN KEY(scan_file_id) REFERENCES scan_files(id)
+        );
         """;
     cmd.ExecuteNonQuery();
 
@@ -1165,6 +1184,26 @@ internal sealed class AnalysisReport
     public string RootPath { get; set; } = string.Empty;
     public DateTime GeneratedAt { get; set; }
     public List<AssemblyInfo> Assemblies { get; set; } = [];
+    public TechnologyStack TechnologyStack { get; set; } = new();
+    public List<string> Licenses { get; set; } = [];
+    public List<string> BuildFiles { get; set; } = [];
+    public CodeMetrics Metrics { get; set; } = new();
+}
+
+internal sealed class TechnologyStack
+{
+    public List<string> Frameworks { get; set; } = [];
+    public List<string> CompilationModes { get; set; } = [];
+    public List<string> Languages { get; set; } = [];
+    public List<string> NuGetPackages { get; set; } = [];
+}
+
+internal sealed class CodeMetrics
+{
+    public int TotalAssemblies { get; set; }
+    public int TotalDecompiledFiles { get; set; }
+    public long TotalLinesOfCode { get; set; }
+    public int ProjectsFound { get; set; }
 }
 
 internal sealed class AssemblyInfo
@@ -1178,6 +1217,11 @@ internal sealed class AssemblyInfo
     public string VendorName { get; set; } = string.Empty;
     public int VendorConfidence { get; set; }
     public string EncodingType { get; set; } = string.Empty;
+    public string License { get; set; } = string.Empty;
+    public bool IsILOnly { get; set; }
+    public bool IsReadyToRun { get; set; }
+    public bool IsNativeAot { get; set; }
+    public long FileSize { get; set; }
 }
 
 internal static class AnalysisReportBuilder
@@ -1185,16 +1229,17 @@ internal static class AnalysisReportBuilder
     public static AnalysisReport? BuildReport(SqliteConnection connection, string scanId)
     {
         using var jobCmd = connection.CreateCommand();
-        jobCmd.CommandText = "SELECT root_path, program_name FROM scan_jobs WHERE scan_id = $scanId;";
+        jobCmd.CommandText = "SELECT root_path, program_name, search_path FROM scan_jobs WHERE scan_id = $scanId;";
         jobCmd.Parameters.AddWithValue("$scanId", scanId);
 
-        string rootPath, programName;
+        string rootPath, programName, searchPath;
         using (var reader = jobCmd.ExecuteReader())
         {
             if (!reader.Read())
                 return null;
             rootPath = reader.GetString(0);
             programName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+            searchPath = reader.IsDBNull(2) ? rootPath : reader.GetString(2);
         }
 
         var report = new AnalysisReport
@@ -1206,37 +1251,290 @@ internal static class AnalysisReportBuilder
         };
 
         using var cmd = connection.CreateCommand();
-        cmd.CommandText = """
-            SELECT f.file_path, am.assembly_name, am.assembly_version, am.target_framework, 
-                   am.public_key_token, vr.vendor_name, vr.confidence, f.file_type
+        cmd.CommandText = @"
+            SELECT f.id, f.file_path, am.assembly_name, am.assembly_version, am.target_framework, 
+                   am.public_key_token, am.is_single_file, am.is_ready_to_run, am.is_native_aot_limited,
+                   vr.vendor_name, vr.confidence, d.artifact_path
             FROM scan_files f
             LEFT JOIN assembly_metadata am ON am.scan_file_id = f.id
             LEFT JOIN vendor_results vr ON vr.scan_file_id = f.id
+            LEFT JOIN decompilation_results d ON d.scan_file_id = f.id
             WHERE f.scan_id = $scanId AND f.file_type = 'dotnet-managed'
             ORDER BY f.file_path;
-            """;
+        ";
         cmd.Parameters.AddWithValue("$scanId", scanId);
+
+        var frameworks = new HashSet<string>();
+        var compilationModes = new HashSet<string>();
+        var languages = new HashSet<string> { "C#" };
+        var nugetPackages = new HashSet<string>();
+        var licenses = new HashSet<string>();
+        var buildFiles = new HashSet<string>();
+        int totalDecompiledFiles = 0;
+        long totalLines = 0;
+        int projectsFound = 0;
 
         using (var reader = cmd.ExecuteReader())
         {
             while (reader.Read())
             {
+                var fileId = reader.GetInt64(0);
+                var filePath = reader.GetString(1);
+                var assemblyName = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                var version = reader.IsDBNull(3) ? string.Empty : reader.GetString(3);
+                var tfm = reader.IsDBNull(4) ? string.Empty : reader.GetString(4);
+                var token = reader.IsDBNull(5) ? string.Empty : reader.GetString(5);
+                var isSingleFile = !reader.IsDBNull(6) && reader.GetInt64(6) == 1;
+                var isR2R = !reader.IsDBNull(7) && reader.GetInt64(7) == 1;
+                var isNativeAot = !reader.IsDBNull(8) && reader.GetInt64(8) == 1;
+                var vendorName = reader.IsDBNull(9) ? string.Empty : reader.GetString(9);
+                var vendorConfidence = reader.IsDBNull(10) ? 0 : Convert.ToInt32(reader.GetInt64(10));
+                var artifactPath = reader.IsDBNull(11) ? string.Empty : reader.GetString(11);
+
+                long fileSize = 0;
+                try { fileSize = new FileInfo(filePath).Length; } catch { }
+
                 var info = new AssemblyInfo
                 {
-                    FilePath = reader.GetString(0),
-                    AssemblyName = reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
-                    Version = reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
-                    TargetFramework = reader.IsDBNull(3) ? string.Empty : reader.GetString(3),
-                    PublicKeyToken = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
-                    VendorName = reader.IsDBNull(5) ? string.Empty : reader.GetString(5),
-                    VendorConfidence = reader.IsDBNull(6) ? 0 : Convert.ToInt32(reader.GetInt64(6)),
-                    EncodingType = DetectEncoding(reader.GetString(0))
+                    FilePath = filePath,
+                    AssemblyName = assemblyName,
+                    Version = version,
+                    TargetFramework = tfm,
+                    PublicKeyToken = token,
+                    VendorName = vendorName,
+                    VendorConfidence = vendorConfidence,
+                    IsILOnly = !isSingleFile && !isR2R && !isNativeAot,
+                    IsReadyToRun = isR2R,
+                    IsNativeAot = isNativeAot,
+                    FileSize = fileSize,
+                    EncodingType = DetectEncoding(filePath)
                 };
+
+                // Classify framework
+                if (!string.IsNullOrWhiteSpace(tfm))
+                {
+                    var fw = ClassifyFramework(tfm);
+                    if (!string.IsNullOrWhiteSpace(fw))
+                        frameworks.Add(fw);
+                }
+
+                if (isR2R) compilationModes.Add("ReadyToRun");
+                if (isNativeAot) compilationModes.Add("NativeAOT");
+                if (isSingleFile) compilationModes.Add("SingleFile");
+
+                // Extract assembly references
+                try
+                {
+                    var asmRefs = System.Reflection.Assembly.LoadFrom(filePath).GetReferencedAssemblies();
+                    foreach (var r in asmRefs)
+                    {
+                        var refName = r.Name ?? string.Empty;
+                        if (!string.IsNullOrWhiteSpace(refName) && !refName.StartsWith("System.") && !refName.StartsWith("Microsoft.") && refName != "mscorlib" && refName != "netstandard")
+                        {
+                            info.References.Add($"{refName}@{r.Version}");
+                        }
+                        DetectNuGetPackage(refName, nugetPackages);
+
+                        try
+                        {
+                            using var refCmd = connection.CreateCommand();
+                            refCmd.CommandText = "INSERT OR IGNORE INTO assembly_references(scan_file_id, referenced_assembly_name, referenced_version) VALUES($fid, $name, $ver);";
+                            refCmd.Parameters.AddWithValue("$fid", fileId);
+                            refCmd.Parameters.AddWithValue("$name", refName);
+                            refCmd.Parameters.AddWithValue("$ver", r.Version?.ToString() ?? "");
+                            refCmd.ExecuteNonQuery();
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+
+                // Analyze decompiled artifacts
+                if (!string.IsNullOrWhiteSpace(artifactPath) && Directory.Exists(artifactPath))
+                {
+                    try
+                    {
+                        var csFiles = Directory.GetFiles(artifactPath, "*.cs", SearchOption.AllDirectories);
+                        totalDecompiledFiles += csFiles.Length;
+                        foreach (var cs in csFiles)
+                        {
+                            try { totalLines += File.ReadLines(cs).Count(); } catch { }
+                        }
+
+                        var csprojFiles = Directory.GetFiles(artifactPath, "*.csproj", SearchOption.AllDirectories);
+                        projectsFound += csprojFiles.Length;
+                        foreach (var cp in csprojFiles)
+                        {
+                            try
+                            {
+                                var projContent = File.ReadAllText(cp);
+                                DetectNuGetPackagesFromCsproj(projContent, nugetPackages);
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { }
+                }
+
+                // License detection per assembly
+                try
+                {
+                    var asmDir = Path.GetDirectoryName(filePath);
+                    if (!string.IsNullOrWhiteSpace(asmDir))
+                    {
+                        var license = DetectLicenseInDirectory(asmDir);
+                        if (!string.IsNullOrWhiteSpace(license))
+                        {
+                            info.License = license;
+                            licenses.Add(license);
+                        }
+                    }
+                }
+                catch { }
+
                 report.Assemblies.Add(info);
             }
         }
 
+        // Build process analysis
+        DetectBuildFiles(rootPath, buildFiles);
+
+        report.TechnologyStack.Frameworks.AddRange(frameworks);
+        report.TechnologyStack.CompilationModes.AddRange(compilationModes);
+        report.TechnologyStack.Languages.AddRange(languages);
+        report.TechnologyStack.NuGetPackages.AddRange(nugetPackages);
+        report.Licenses.AddRange(licenses);
+        report.BuildFiles.AddRange(buildFiles);
+        report.Metrics = new CodeMetrics
+        {
+            TotalAssemblies = report.Assemblies.Count,
+            TotalDecompiledFiles = totalDecompiledFiles,
+            TotalLinesOfCode = totalLines,
+            ProjectsFound = projectsFound
+        };
+
         return report;
+    }
+
+    private static string ClassifyFramework(string tfm)
+    {
+        if (tfm.StartsWith("net10")) return ".NET 10";
+        if (tfm.StartsWith("net9")) return ".NET 9";
+        if (tfm.StartsWith("net8")) return ".NET 8";
+        if (tfm.StartsWith("net7")) return ".NET 7";
+        if (tfm.StartsWith("net6")) return ".NET 6";
+        if (tfm.StartsWith("net5")) return ".NET 5";
+        if (tfm.StartsWith("netcoreapp3")) return ".NET Core 3.1";
+        if (tfm.StartsWith("netcoreapp")) return ".NET Core 2.x";
+        if (tfm.StartsWith("netstandard")) return ".NET Standard";
+        if (tfm.StartsWith("net4")) return ".NET Framework 4.x";
+        if (tfm.StartsWith("v4")) return ".NET Framework 4.x";
+        return tfm;
+    }
+
+    private static void DetectNuGetPackage(string assemblyName, HashSet<string> packages)
+    {
+        var known = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Newtonsoft.Json"] = "Newtonsoft.Json",
+            ["Serilog"] = "Serilog",
+            ["NLog"] = "NLog",
+            ["AutoMapper"] = "AutoMapper",
+            ["Dapper"] = "Dapper",
+            ["Microsoft.EntityFrameworkCore"] = "Entity Framework Core",
+            ["Npgsql"] = "Npgsql",
+            ["StackExchange.Redis"] = "StackExchange.Redis",
+            ["MassTransit"] = "MassTransit",
+            ["MediatR"] = "MediatR",
+            ["FluentValidation"] = "FluentValidation",
+            ["Polly"] = "Polly",
+            ["RestSharp"] = "RestSharp",
+            ["Swashbuckle"] = "Swashbuckle (Swagger)",
+            ["Xunit"] = "xUnit",
+            ["NUnit"] = "NUnit",
+            ["Moq"] = "Moq",
+            ["FluentAssertions"] = "FluentAssertions",
+            ["Bogus"] = "Bogus",
+            ["BenchmarkDotNet"] = "BenchmarkDotNet",
+            ["OpenTelemetry"] = "OpenTelemetry",
+            ["YamlDotNet"] = "YamlDotNet",
+            ["CsvHelper"] = "CsvHelper",
+            ["Avalonia"] = "Avalonia UI",
+            ["ReactiveUI"] = "ReactiveUI",
+        };
+        if (known.TryGetValue(assemblyName, out var pkg))
+            packages.Add(pkg);
+    }
+
+    private static void DetectNuGetPackagesFromCsproj(string content, HashSet<string> packages)
+    {
+        var matches = Regex.Matches(content, @"<PackageReference\s+Include=""([^""]+)""[^>]*>");
+        foreach (Match match in matches)
+        {
+            if (match.Groups.Count > 1)
+                packages.Add(match.Groups[1].Value);
+        }
+    }
+
+    private static string DetectLicenseInDirectory(string directory)
+    {
+        var licenseFiles = new[] { "LICENSE", "LICENSE.txt", "LICENSE.md", "license.txt", "license.md" };
+        foreach (var lf in licenseFiles)
+        {
+            var path = Path.Combine(directory, lf);
+            if (!File.Exists(path)) continue;
+            try
+            {
+                var text = File.ReadAllText(path);
+                if (text.Contains("MIT")) return "MIT";
+                if (text.Contains("Apache License") && text.Contains("2.0")) return "Apache-2.0";
+                if (text.Contains("GNU GENERAL PUBLIC LICENSE") && text.Contains("Version 3")) return "GPL-3.0";
+                if (text.Contains("GNU GENERAL PUBLIC LICENSE")) return "GPL";
+                if (text.Contains("BSD")) return "BSD";
+                if (text.Contains("Mozilla Public License")) return "MPL";
+                return "Other";
+            }
+            catch { }
+        }
+        return string.Empty;
+    }
+
+    private static void DetectBuildFiles(string rootPath, HashSet<string> buildFiles)
+    {
+        var patterns = new[] { "*.sln", "*.csproj", "*.vbproj", "*.fsproj", "*.props", "*.targets",
+            "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+            "Jenkinsfile", ".travis.yml", "azure-pipelines.yml",
+            "Makefile", "CMakeLists.txt", "package.json", "*.nuspec",
+            "NuGet.config", "Directory.Build.props", "Directory.Packages.props",
+            "global.json", ".editorconfig" };
+
+        foreach (var pattern in patterns)
+        {
+            try
+            {
+                var files = Directory.GetFiles(rootPath, pattern, SearchOption.AllDirectories);
+                foreach (var f in files)
+                    buildFiles.Add(Path.GetRelativePath(rootPath, f));
+            }
+            catch { }
+        }
+
+        // CI/CD directories
+        var ciDirs = new[] { ".github/workflows", ".gitlab-ci.yml", ".circleci", ".azuredevops" };
+        foreach (var dir in ciDirs)
+        {
+            var fullPath = Path.Combine(rootPath, dir);
+            if (Directory.Exists(fullPath))
+            {
+                try
+                {
+                    var ymlFiles = Directory.GetFiles(fullPath, "*.yml", SearchOption.AllDirectories);
+                    foreach (var yf in ymlFiles)
+                        buildFiles.Add(Path.GetRelativePath(rootPath, yf));
+                }
+                catch { }
+            }
+        }
     }
 
     private static string DetectEncoding(string filePath)
@@ -1255,10 +1553,7 @@ internal static class AnalysisReportBuilder
     private static bool ContainsUtf8(byte[] bytes)
     {
         for (var i = 0; i < bytes.Length; i++)
-        {
-            if ((bytes[i] & 0x80) != 0)
-                return true;
-        }
+            if ((bytes[i] & 0x80) != 0) return true;
         return false;
     }
 }
@@ -1275,29 +1570,77 @@ internal static class MarkdownReportFormatter
         sb.AppendLine($"**Root Path:** `{report.RootPath}`");
         sb.AppendLine();
 
-        sb.AppendLine("## Summary");
+        sb.AppendLine("## Technology Stack");
         sb.AppendLine();
-        sb.AppendLine($"- **Total Assemblies:** {report.Assemblies.Count}");
+        if (report.TechnologyStack.Frameworks.Count > 0)
+            sb.AppendLine("- **Frameworks:** " + string.Join(", ", report.TechnologyStack.Frameworks));
+        if (report.TechnologyStack.CompilationModes.Count > 0)
+            sb.AppendLine("- **Compilation:** " + string.Join(", ", report.TechnologyStack.CompilationModes));
+        if (report.TechnologyStack.Languages.Count > 0)
+            sb.AppendLine("- **Languages:** " + string.Join(", ", report.TechnologyStack.Languages));
+        if (report.TechnologyStack.NuGetPackages.Count > 0)
+            sb.AppendLine("- **NuGet Packages:** " + string.Join(", ", report.TechnologyStack.NuGetPackages.Take(30)));
+        sb.AppendLine();
+
+        sb.AppendLine("## Code Metrics");
+        sb.AppendLine();
+        sb.AppendLine("| Metric | Value |");
+        sb.AppendLine("|--------|-------|");
+        sb.AppendLine($"| Total Assemblies | {report.Metrics.TotalAssemblies} |");
+        sb.AppendLine($"| Decompiled Files | {report.Metrics.TotalDecompiledFiles} |");
+        sb.AppendLine($"| Lines of Code | {report.Metrics.TotalLinesOfCode:N0} |");
+        sb.AppendLine($"| Projects Found | {report.Metrics.ProjectsFound} |");
         sb.AppendLine();
 
         sb.AppendLine("## Assemblies");
         sb.AppendLine();
-        sb.AppendLine("| Assembly | Version | Framework | Vendor | Encoding |");
-        sb.AppendLine("|----------|---------|-----------|--------|----------|");
+        sb.AppendLine("| Assembly | Version | Framework | Type | Vendor | License | Size |");
+        sb.AppendLine("|----------|---------|-----------|------|--------|---------|------|");
 
         foreach (var asm in report.Assemblies)
         {
+            var type = asm.IsReadyToRun ? "R2R" : asm.IsNativeAot ? "AOT" : "IL";
             var vendor = string.IsNullOrEmpty(asm.VendorName) ? "-" : $"{asm.VendorName} ({asm.VendorConfidence}%)";
-            sb.AppendLine($"| {asm.AssemblyName} | {asm.Version} | {asm.TargetFramework} | {vendor} | {asm.EncodingType} |");
+            var license = string.IsNullOrEmpty(asm.License) ? "-" : asm.License;
+            var size = asm.FileSize > 0 ? $"{asm.FileSize / 1024.0:F1} KB" : "-";
+            sb.AppendLine($"| {asm.AssemblyName} | {asm.Version} | {asm.TargetFramework} | {type} | {vendor} | {license} | {size} |");
         }
 
         sb.AppendLine();
+        sb.AppendLine("## Dependencies");
+        sb.AppendLine();
+        foreach (var asm in report.Assemblies.Where(a => a.References.Count > 0))
+        {
+            sb.AppendLine($"### {asm.AssemblyName}");
+            foreach (var dep in asm.References.Take(10))
+                sb.AppendLine($"- `{dep}`");
+            if (asm.References.Count > 10)
+                sb.AppendLine($"- ... and {asm.References.Count - 10} more");
+            sb.AppendLine();
+        }
+
+        if (report.Licenses.Count > 0)
+        {
+            sb.AppendLine("## Licenses Detected");
+            sb.AppendLine();
+            foreach (var lic in report.Licenses)
+                sb.AppendLine($"- {lic}");
+            sb.AppendLine();
+        }
+
+        if (report.BuildFiles.Count > 0)
+        {
+            sb.AppendLine("## Build Files");
+            sb.AppendLine();
+            foreach (var bf in report.BuildFiles.OrderBy(x => x))
+                sb.AppendLine($"- `{bf}`");
+            sb.AppendLine();
+        }
+
         sb.AppendLine("## File Paths");
         sb.AppendLine();
         foreach (var asm in report.Assemblies)
-        {
             sb.AppendLine($"- `{asm.FilePath}`");
-        }
 
         return sb.ToString();
     }
@@ -1312,21 +1655,39 @@ internal static class HtmlReportFormatter
         sb.AppendLine("<html lang=\"en\">");
         sb.AppendLine("<head>");
         sb.AppendLine("<meta charset=\"UTF-8\">");
-        sb.AppendLine("<title>Analysis Report</title>");
+        sb.AppendLine("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">");
+        sb.AppendLine($"<title>Analysis Report: {HtmlEscape(report.ProgramName)}</title>");
         sb.AppendLine("<style>");
-        sb.AppendLine("body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 2em; line-height: 1.6; color: #333; }");
-        sb.AppendLine("h1 { color: #0366d6; }");
-        sb.AppendLine("h2 { color: #24292e; margin-top: 1.5em; border-bottom: 1px solid #ddd; padding-bottom: 0.5em; }");
-        sb.AppendLine("table { border-collapse: collapse; width: 100%; margin: 1em 0; }");
-        sb.AppendLine("th, td { border: 1px solid #ddd; padding: 0.75em; text-align: left; }");
-        sb.AppendLine("th { background-color: #f6f8fa; font-weight: bold; }");
-        sb.AppendLine("tr:nth-child(even) { background-color: #f9fafc; }");
-        sb.AppendLine("code { background-color: #f6f8fa; padding: 0.2em 0.4em; border-radius: 3px; font-family: Courier, monospace; }");
-        sb.AppendLine("ul { margin: 0.5em 0; padding-left: 1.5em; }");
-        sb.AppendLine(".meta { background-color: #f6f8fa; padding: 1em; border-radius: 6px; margin: 1em 0; }");
+        sb.AppendLine("*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}");
+        sb.AppendLine("body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,sans-serif;background:#0d1117;color:#c9d1d9;line-height:1.6;min-height:100vh}");
+        sb.AppendLine(".container{max-width:1100px;margin:0 auto;padding:2rem}");
+        sb.AppendLine("h1{font-size:2rem;font-weight:700;color:#58a6ff;margin-bottom:.5rem}");
+        sb.AppendLine("h2{font-size:1.35rem;font-weight:600;color:#f0f6fc;margin:2rem 0 1rem;padding-bottom:.5rem;border-bottom:1px solid #30363d}");
+        sb.AppendLine("h3{font-size:1.1rem;font-weight:600;color:#e6edf3;margin:1rem 0 .5rem}");
+        sb.AppendLine(".meta{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1.25rem;margin:1.5rem 0}");
+        sb.AppendLine(".meta p{margin:.35rem 0}");
+        sb.AppendLine(".badge{display:inline-block;padding:.15em .6em;font-size:.8rem;font-weight:600;border-radius:12px;margin:.15em}");
+        sb.AppendLine(".badge-net{background:#178600;color:#fff}");
+        sb.AppendLine(".badge-pkg{background:#1f6feb;color:#fff}");
+        sb.AppendLine(".badge-lic{background:#6e40c9;color:#fff}");
+        sb.AppendLine(".badge-build{background:#30363d;color:#8b949e}");
+        sb.AppendLine("table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem}");
+        sb.AppendLine("th,td{border:1px solid #30363d;padding:.65rem .85rem;text-align:left}");
+        sb.AppendLine("th{background:#161b22;font-weight:600;color:#f0f6fc;position:sticky;top:0}");
+        sb.AppendLine("tr:nth-child(even){background:#161b22}");
+        sb.AppendLine("tr:hover{background:#1c2129}");
+        sb.AppendLine("code{background:#161b22;padding:.15em .4em;border-radius:4px;font-family:'JetBrains Mono',Cascadia Code,Consolas,monospace;font-size:.88em;color:#d2a8ff}");
+        sb.AppendLine("ul,ol{margin:.5rem 0 .5rem 1.5rem}");
+        sb.AppendLine("li{margin:.2rem 0}");
+        sb.AppendLine(".grid-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem;margin:1rem 0}");
+        sb.AppendLine(".card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem}");
+        sb.AppendLine(".card h4{font-size:.95rem;color:#8b949e;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.05em}");
+        sb.AppendLine(".card .value{font-size:1.5rem;font-weight:700;color:#f0f6fc}");
+        sb.AppendLine(".section-deps{max-height:400px;overflow-y:auto}");
         sb.AppendLine("</style>");
         sb.AppendLine("</head>");
         sb.AppendLine("<body>");
+        sb.AppendLine("<div class=\"container\">");
 
         sb.AppendLine($"<h1>Analysis Report: {HtmlEscape(report.ProgramName)}</h1>");
         sb.AppendLine("<div class=\"meta\">");
@@ -1335,29 +1696,87 @@ internal static class HtmlReportFormatter
         sb.AppendLine($"<p><strong>Root Path:</strong> <code>{HtmlEscape(report.RootPath)}</code></p>");
         sb.AppendLine("</div>");
 
-        sb.AppendLine("<h2>Summary</h2>");
-        sb.AppendLine($"<ul><li>Total Assemblies: <strong>{report.Assemblies.Count}</strong></li></ul>");
+        sb.AppendLine("<h2>Code Metrics</h2>");
+        sb.AppendLine("<div class=\"grid-2\">");
+        sb.AppendLine($"<div class=\"card\"><h4>Assemblies</h4><div class=\"value\">{report.Metrics.TotalAssemblies}</div></div>");
+        sb.AppendLine($"<div class=\"card\"><h4>Decompiled Files</h4><div class=\"value\">{report.Metrics.TotalDecompiledFiles}</div></div>");
+        sb.AppendLine($"<div class=\"card\"><h4>Lines of Code</h4><div class=\"value\">{report.Metrics.TotalLinesOfCode:N0}</div></div>");
+        sb.AppendLine($"<div class=\"card\"><h4>Projects</h4><div class=\"value\">{report.Metrics.ProjectsFound}</div></div>");
+        sb.AppendLine("</div>");
+
+        sb.AppendLine("<h2>Technology Stack</h2>");
+        if (report.TechnologyStack.Frameworks.Count > 0)
+        {
+            sb.AppendLine("<p>");
+            foreach (var fw in report.TechnologyStack.Frameworks)
+                sb.AppendLine($"<span class=\"badge badge-net\">{HtmlEscape(fw)}</span> ");
+            sb.AppendLine("</p>");
+        }
+        if (report.TechnologyStack.CompilationModes.Count > 0)
+            sb.AppendLine("<p><strong>Compilation:</strong> " + string.Join(", ", report.TechnologyStack.CompilationModes.Select(HtmlEscape)) + "</p>");
+        if (report.TechnologyStack.NuGetPackages.Count > 0)
+        {
+            sb.AppendLine("<p>");
+            foreach (var pkg in report.TechnologyStack.NuGetPackages.Take(40))
+                sb.AppendLine($"<span class=\"badge badge-pkg\">{HtmlEscape(pkg)}</span> ");
+            if (report.TechnologyStack.NuGetPackages.Count > 40)
+                sb.AppendLine($"<span class=\"badge\">+{report.TechnologyStack.NuGetPackages.Count - 40} more</span>");
+            sb.AppendLine("</p>");
+        }
 
         sb.AppendLine("<h2>Assemblies</h2>");
         sb.AppendLine("<table>");
-        sb.AppendLine("<thead><tr><th>Assembly</th><th>Version</th><th>Framework</th><th>Vendor</th><th>Encoding</th></tr></thead>");
+        sb.AppendLine("<thead><tr><th>Assembly</th><th>Version</th><th>Framework</th><th>Type</th><th>Vendor</th><th>License</th><th>Size</th></tr></thead>");
         sb.AppendLine("<tbody>");
         foreach (var asm in report.Assemblies)
         {
+            var type = asm.IsReadyToRun ? "R2R" : asm.IsNativeAot ? "AOT" : "IL";
             var vendor = string.IsNullOrEmpty(asm.VendorName) ? "-" : $"{HtmlEscape(asm.VendorName)} ({asm.VendorConfidence}%)";
-            sb.AppendLine($"<tr><td>{HtmlEscape(asm.AssemblyName)}</td><td>{HtmlEscape(asm.Version)}</td><td>{HtmlEscape(asm.TargetFramework)}</td><td>{vendor}</td><td>{HtmlEscape(asm.EncodingType)}</td></tr>");
+            var license = string.IsNullOrEmpty(asm.License) ? "-" : $"<span class=\"badge badge-lic\">{HtmlEscape(asm.License)}</span>";
+            var size = asm.FileSize > 0 ? $"{asm.FileSize / 1024.0:F1} KB" : "-";
+            sb.AppendLine($"<tr><td>{HtmlEscape(asm.AssemblyName)}</td><td>{HtmlEscape(asm.Version)}</td><td>{HtmlEscape(asm.TargetFramework)}</td><td>{type}</td><td>{vendor}</td><td>{license}</td><td>{size}</td></tr>");
         }
         sb.AppendLine("</tbody>");
         sb.AppendLine("</table>");
 
+        sb.AppendLine("<h2>Dependencies</h2>");
+        sb.AppendLine("<div class=\"section-deps\">");
+        foreach (var asm in report.Assemblies.Where(a => a.References.Count > 0))
+        {
+            sb.AppendLine($"<h3>{HtmlEscape(asm.AssemblyName)}</h3><ul>");
+            foreach (var dep in asm.References.Take(10))
+                sb.AppendLine($"<li><code>{HtmlEscape(dep)}</code></li>");
+            if (asm.References.Count > 10)
+                sb.AppendLine($"<li>... and {asm.References.Count - 10} more</li>");
+            sb.AppendLine("</ul>");
+        }
+        sb.AppendLine("</div>");
+
+        if (report.Licenses.Count > 0)
+        {
+            sb.AppendLine("<h2>Licenses Detected</h2>");
+            sb.AppendLine("<ul>");
+            foreach (var lic in report.Licenses)
+                sb.AppendLine($"<li>{HtmlEscape(lic)}</li>");
+            sb.AppendLine("</ul>");
+        }
+
+        if (report.BuildFiles.Count > 0)
+        {
+            sb.AppendLine("<h2>Build Files</h2>");
+            sb.AppendLine("<ul>");
+            foreach (var bf in report.BuildFiles.OrderBy(x => x))
+                sb.AppendLine($"<li><code>{HtmlEscape(bf)}</code></li>");
+            sb.AppendLine("</ul>");
+        }
+
         sb.AppendLine("<h2>File Paths</h2>");
         sb.AppendLine("<ul>");
         foreach (var asm in report.Assemblies)
-        {
             sb.AppendLine($"<li><code>{HtmlEscape(asm.FilePath)}</code></li>");
-        }
         sb.AppendLine("</ul>");
 
+        sb.AppendLine("</div>");
         sb.AppendLine("</body>");
         sb.AppendLine("</html>");
         return sb.ToString();
@@ -1365,8 +1784,11 @@ internal static class HtmlReportFormatter
 
     private static string HtmlEscape(string text)
     {
-        if (string.IsNullOrEmpty(text)) return text;
-        return text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;").Replace("'", "&#39;");
+        return text
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;")
+            .Replace("\"", "&quot;");
     }
 }
 

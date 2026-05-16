@@ -11,6 +11,8 @@ namespace InfoExeGui;
 
 public partial class MainWindow : Window
 {
+    private string? _lastReportPath;
+    private string? _lastReportFormat;
     public MainWindow()
     {
         InitializeComponent();
@@ -19,6 +21,7 @@ public partial class MainWindow : Window
             CliPathBox.Text = ResolveDefaultCliPath();
             DbPathBox.Text = ResolveDefaultDbPath();
             UpdatePreview();
+            LoadScans();
         };
     }
 
@@ -167,6 +170,7 @@ public partial class MainWindow : Window
             }
 
             await RunCliAsync(args, cliPath, dbPath, appendHeader: true);
+            LoadScans();
         }
         finally
         {
@@ -477,6 +481,24 @@ public partial class MainWindow : Window
         {
             await RunCliAsync(args, cliPath, dbPath, true);
             StatusText.Text = "Raport wygenerowany pomyślnie!";
+
+            var lines = OutputBox.Text?.Split('\n') ?? [];
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                if (trimmed.StartsWith("analyze") && trimmed.Contains(':'))
+                {
+                    _lastReportPath = trimmed[(trimmed.IndexOf(':') + 1)..].Trim();
+                    break;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(_lastReportPath))
+            {
+                _lastReportFormat = FormatHtml.IsChecked == true ? "html" : "md";
+                ReportActionsPanel.IsVisible = true;
+                OpenBrowserBtn.IsVisible = _lastReportFormat == "html";
+            }
         }
         catch (Exception ex)
         {
@@ -524,6 +546,37 @@ public partial class MainWindow : Window
         catch
         {
             // silently fail
+        }
+    }
+
+    private void OpenReport_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(_lastReportPath) && File.Exists(_lastReportPath))
+        {
+            var psi = new ProcessStartInfo { FileName = _lastReportPath, UseShellExecute = true };
+            Process.Start(psi);
+        }
+    }
+
+    private void OpenExplorer_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(_lastReportPath))
+        {
+            var folder = Path.GetDirectoryName(_lastReportPath);
+            if (!string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder))
+            {
+                var psi = new ProcessStartInfo { FileName = "explorer.exe", Arguments = "/select,\"" + _lastReportPath + "\"", UseShellExecute = false };
+                Process.Start(psi);
+            }
+        }
+    }
+
+    private void OpenBrowser_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(_lastReportPath) && File.Exists(_lastReportPath))
+        {
+            var psi = new ProcessStartInfo { FileName = _lastReportPath, UseShellExecute = true };
+            Process.Start(psi);
         }
     }
 }
