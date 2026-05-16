@@ -2,69 +2,69 @@
 
 ## What This Is
 
-InfoExe to lokalne narzędzie CLI do analizy binariów .NET (`.dll`, `.exe`) z opcjonalnym torem dla artefaktów Python (`.py`, `.whl`). Aplikacja działa offline, skanuje wskazany katalog, zbiera metadane, identyfikuje producentów bibliotek i wykonuje dekompilację IL do projektu C# oraz raportów JSON/CSV.
+InfoExe to lokalne narzędzie CLI i GUI (Avalonia) do analizy binariów .NET (`.dll`, `.exe`) z opcjonalnym torem dla artefaktów Python (`.py`, `.whl`). Aplikacja działa offline, skanuje wskazany katalog, zbiera metadane, identyfikuje producentów bibliotek, wykonuje dekompilację IL do projektu C#, generuje raporty JSON/CSV oraz kompleksowe raporty analityczne MD/HTML z technologiami, zależnościami, licencjami i metrykami kodu.
 
 ## Core Value
 
-Użytkownik może bezpiecznie i offline uzyskać wiarygodny, powtarzalny raport o składzie i pochodzeniu aplikacji .NET oraz dekompilowane źródła.
+Użytkownik może bezpiecznie i offline uzyskać wiarygodny, powtarzalny raport o składzie, technologiach, zależnościach i pochodzeniu aplikacji .NET oraz dekompilowane źródła.
 
 ## Requirements
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Uruchamianie skanu dla dowolnego katalogu — v1.0
+- ✓ Pasywna analiza metadanych .NET bez uruchamiania obcego kodu — v1.0
+- ✓ Dekompilacja IL do artefaktów źródłowych — v1.0
+- ✓ Identyfikacja producenta na bazie metadanych i podpisów — v1.0
+- ✓ Wyniki w SQLite + eksport JSON/CSV — v1.0
+- ✓ Komendy CLI: `scan`, `status`, `export`, `retry`, `analyze` — v1.0
+- ✓ GUI Avalonia do zarządzania parametrami i uruchamiania CLI — v1.0
+- ✓ Raportowanie analityczne MD/HTML z technologiami, zależnościami, licencjami — v1.0
 
 ### Active
 
-- [ ] Użytkownik uruchamia skan dla dowolnego `rootPath` i dostaje status zadania.
-- [ ] Narzędzie rozpoznaje pliki .NET i wykonuje pasywną analizę metadanych bez uruchamiania obcego kodu.
-- [ ] Narzędzie dekompiluje assembly IL do artefaktów źródłowych i zapisuje wynik.
-- [ ] Raport zawiera identyfikację producenta na bazie metadanych i podpisów.
-- [ ] Wyniki są zapisywane lokalnie w SQLite oraz eksportowane do JSON/CSV.
-- [ ] CLI wspiera co najmniej komendy: `scan`, `status`, `export`, `retry`.
+- [ ] Porównywanie raportów między skanami
+- [ ] Custom templates dla raportów
+- [ ] SBOM export
 
 ### Out of Scope
 
-- Dynamiczne uruchamianie analizowanych binariów — ryzyko bezpieczeństwa, niezgodne z założeniem analizy pasywnej.
-- Automatyczne omijanie DRM/ochron licencyjnych — poza zakresem legalnym i bezpieczeństwa.
-- Rozbudowany GUI jako część v1 — priorytetem jest stabilny pipeline CLI.
+- Dynamiczne uruchamianie analizowanych binariów — ryzyko bezpieczeństwa
+- Automatyczne omijanie DRM/ochron licencyjnych — poza zakresem legalnym
+- PDF export — kompleksowa biblioteka + wersjonowanie
 
 ## Context
 
-Projekt bazuje na raporcie analitycznym z 2026-05-15. Rekomendowany rdzeń to ILSpy/ICSharpCode.Decompiler, analiza metadanych przez Mono.Cecil/dnlib/AsmResolver i lokalna persystencja w SQLite. Pipeline ma przetwarzać pliki wsadowo, używać kolejkowania in-memory z retry i utrzymywać pełny tryb offline. Kluczowe ograniczenia techniczne dotyczą plików AOT/obfuskowanych oraz przypadków ReadyToRun/single-file.
+**Current state (v1.0 shipped):**
+- 2 projekty w unified solution (`src/InfoExe.sln`)
+- `InfoExeApp` — CLI (net10.0, Microsoft.Data.Sqlite 10.0.0), ~2000 LOC w Program.cs
+- `InfoExeGui` — GUI Avalonia 11.3.15, ~600 LOC + 2 pliki AXAML
+- SQLite schema: scan_jobs, scan_files, assembly_metadata, vendor_evidence, vendor_results, decompilation_results, analyze_reports, assembly_references, license_detections
+- Pipeline: scan → classify → metadata → vendor → decompile → analyze
+- ILSpy jako dekompilator zewnętrzny (wymagany w PATH)
+- Pełny tryb offline, brak zależności sieciowych
 
 ## Constraints
 
 - **Security**: Analiza wyłącznie offline i pasywna — brak wykonywania badanych plików.
 - **Legal**: Użycie wyłącznie dla legalnie posiadanych artefaktów i do celów interoperacyjności/diagnostyki.
-- **Platform**: Główny scenariusz uruchomienia to lokalny laptop i CLI.
+- **Platform**: Windows (CLI + GUI Avalonia).
 - **Persistence**: Wyniki muszą być trwałe lokalnie (SQLite + raporty plikowe).
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| ILSpy jako domyślny dekompilator | aktywny OSS, CLI + biblioteka, dobre pokrycie .NET | — Pending |
-| SQLite jako magazyn wyników | prosty offline storage z dobrym queryability | — Pending |
-| Kolejkowanie in-memory z retry | brak zależności od brokera i prostszy deployment lokalny | — Pending |
-| CLI jako interfejs główny | najszybsza droga do działającego v1 i automatyzacji | — Pending |
+| ILSpy jako domyślny dekompilator | Aktywny OSS, CLI + biblioteka, dobre pokrycie .NET | ✓ Good — działa z retry |
+| SQLite jako magazyn wyników | Prosty offline storage z dobrym queryability | ✓ Good — schema 9 tabel |
+| Kolejkowanie in-memory z retry | Brak zależności od brokera, prostszy deployment lokalny | ✓ Good |
+| CLI jako interfejs główny | Najszybsza droga do działającego v1 i automatyzacji | ✓ Good — 6 komend |
+| Avalonia 11.3.15 dla GUI | Nowoczesny, cross-platform UI framework dla .NET | ✓ Good — unified solution |
+| Analiza technologii przez refleksję | Assembly.LoadFrom + GetReferencedAssemblies | ✓ Good — wykrywa pakiety NuGet |
 
 ## Evolution
 
 This document evolves at phase transitions and milestone boundaries.
 
-**After each phase transition** (via `/gsd-transition`):
-1. Requirements invalidated? → Move to Out of Scope with reason
-2. Requirements validated? → Move to Validated with phase reference
-3. New requirements emerged? → Add to Active
-4. Decisions to log? → Add to Key Decisions
-5. "What This Is" still accurate? → Update if drifted
-
-**After each milestone** (via `/gsd-complete-milestone`):
-1. Full review of all sections
-2. Core Value check — still the right priority?
-3. Audit Out of Scope — reasons still valid?
-4. Update Context with current state
-
 ---
-*Last updated: 2026-05-15 after initialization*
+*Last updated: 2026-05-16 after v1.0 milestone completion*

@@ -1,112 +1,26 @@
 # Roadmap: InfoExe
 
-**Created:** 2026-05-15  
-**Mode:** yolo (auto)  
-**Granularity:** coarse
+**Created:** 2026-05-15
+**Updated:** 2026-05-16
+**Mode:** yolo (auto)
 
-## Phase Overview
+## Milestones
 
-| Phase | Name | Goal | Requirements |
-|---|---|---|---|
-| 1 | Foundations & Scan Engine | Zbudować fundament runtime, dane, bezpieczeństwo i podstawowy skan | SCAN-01, SCAN-02, SCAN-04, DECO-03, DATA-01 |
-| 2 | Metadata & Vendor Attribution | Dostarczyć wiarygodną analizę metadanych i vendor confidence | META-01, META-02, META-03, VEND-01, VEND-02, VEND-03 |
-| 3 | Decompilation & Reliability | Ukończyć dekompilację IL i odporny retry model | DECO-01, DECO-02, SCAN-03 |
-| 4 | Reporting & Exports | Dostarczyć komplet raportowy JSON/CSV z provenance | DATA-02, DATA-03, DATA-04 |
-| 5 | Optional Python Lane | Dodać opcjonalny pasywny tor analizy Python | PY-01, PY-02 |
+- ✅ **v1.0 milestone** — Phases 1-7 (shipped 2026-05-16)
 
-## Phase Details
+## Phases
 
-### Phase 1: Foundations & Scan Engine
-Goal: Stabilny rdzeń CLI + model danych + pipeline scan w pełni offline.
-Requirements: SCAN-01, SCAN-02, SCAN-04, DECO-03, DATA-01
-Success criteria:
-1. `scan --root` uruchamia pełny przebieg odkrywania plików i zapisuje scanId.
-2. Pipeline nie uruchamia analizowanych binariów na żadnym etapie.
-3. SQLite przechowuje stany etapów i pozwala wznowić pracę po błędzie.
-4. `status` pokazuje stan i agregaty przetwarzania.
+<details>
+<summary>✅ v1.0 milestone (Phases 1-7) — SHIPPED 2026-05-16</summary>
 
-**UI hint**: no
+- [x] Phase 1: Foundations & Scan Engine (1/1 plan) — completed 2026-05-15
+- [x] Phase 2: Metadata & Vendor Attribution (1/1 plan) — completed 2026-05-15
+- [x] Phase 3: Decompilation & Reliability (1/1 plan) — completed 2026-05-15
+- [x] Phase 4: Reporting & Exports (1/1 plan) — completed 2026-05-15
+- [x] Phase 5: Optional Python Lane (1/1 plan) — completed 2026-05-15
+- [x] Phase 6: GUI Avalonia (2/2 plans) — completed 2026-05-16
+- [x] Phase 7: Analyze & Reports (3/3 plans) — completed 2026-05-16
 
-### Phase 2: Metadata & Vendor Attribution
-Goal: Wiarygodna interpretacja metadanych i producenta z jawnie wyrażoną pewnością.
-Requirements: META-01, META-02, META-03, VEND-01, VEND-02, VEND-03
-Success criteria:
-1. Każdy plik .NET ma wynik klasyfikacji capability (IL/R2R/single-file/AOT-limited).
-2. Metadane assembly i referencji zapisują się spójnie do modelu.
-3. Vendor result zawiera evidence trail i confidence score.
-4. Konfliktujące dowody skutkują stanem inconclusive zamiast fałszywej pewności.
+</details>
 
-**UI hint**: no
-
-### Phase 3: Decompilation & Reliability
-Goal: Niezawodna dekompilacja IL z kontrolą błędów i retry.
-Requirements: DECO-01, DECO-02, SCAN-03
-Success criteria:
-1. IL-capable assembly dekompilują się do artefaktów źródłowych.
-2. Unsupported/partial przypadki mają jawny reason code.
-3. Retry działa per-stage i respektuje limity prób/backoff.
-4. Stuck jobs są wykrywane i eskalowane do trwałego statusu błędu.
-
-**UI hint**: no
-
-### Phase 4: Reporting & Exports
-Goal: Gotowe raportowanie operacyjne i audytowe.
-Requirements: DATA-02, DATA-03, DATA-04
-Success criteria:
-1. `export` tworzy poprawny raport JSON dla scanId.
-2. `export` tworzy zgodny raport CSV dla scanId.
-3. Parzystość danych DB/JSON/CSV jest zachowana dla kluczowych pól.
-4. Raport zawiera provenance wymagane do odtworzenia kontekstu.
-
-**UI hint**: no
-
-### Phase 5: Optional Python Lane
-Goal: Poszerzyć zakres o opcjonalną analizę artefaktów Python bez naruszenia modelu bezpieczeństwa.
-Requirements: PY-01, PY-02
-Success criteria:
-1. Przełącznik include-python uruchamia analizę `.py`/`.whl`.
-2. Python lane jest statyczny/pasywny (brak wykonania kodu).
-3. Wyniki Python trafiają do wspólnego modelu i eksportów.
-
-**UI hint**: no
-
-## Coverage
-
-- v1 requirements: 19
-- mapped: 19
-- unmapped: 0
-
-### Phase 6: Dodaj osobny projekt GUI Avalonia dla Windows do zarządzania parametrami InfoExe, współpracujący z CLI lub działający samodzielnie
-
-**Goal:** Polish and fix the existing InfoExeGui companion app: create a unified solution file, upgrade Avalonia to 11.3.x, and fix the CLI-path auto-discovery bug so the GUI is ready for daily use.
-**Requirements**: GUI-01, GUI-02, GUI-03
-**Depends on:** Phase 5
-**Plans:** 2 plans
-
-Requirements:
-- GUI-01: Unified `src/InfoExe.sln` containing both InfoExeApp and InfoExeGui projects
-- GUI-02: Avalonia packages at 11.3.15 with a clean build (no NU1903 advisory warning)
-- GUI-03: `ResolveDefaultCliPath` correctly resolves InfoExeApp.exe in both dev-layout (4-level relative path) and xcopy-install-layout (same folder as GUI exe)
-
-Plans:
-- [ ] 06-01-PLAN.md — Create InfoExe.sln + upgrade Avalonia 11.2.0 → 11.3.15 + suppress NU1903
-- [ ] 06-02-PLAN.md — Fix ResolveDefaultCliPath (5→4 levels + xcopy probe) + smoke-test checkpoint
-
-### Phase 7: Analiza i raportowanie aplikacji .NET (CLI + GUI)
-
-**Goal:** Add comprehensive analysis and reporting to InfoExe: new `analyze` command generating MD+HTML reports of assemblies, DLLs, dependencies, and encoding; extend GUI to configure and preview analysis reports.
-**Requirements**: ANALYZE-01, ANALYZE-02, ANALYZE-03, ANALYZE-04, ANALYZE-05
-**Depends on:** Phase 6
-**Plans:** 3 plans
-
-Requirements:
-- ANALYZE-01: New `analyze` command generates structured analysis of a completed scan
-- ANALYZE-02: Reports include assembly metadata (name, version, target framework, references, signing)
-- ANALYZE-03: Reports include dependency graph and encoding detection
-- ANALYZE-04: Report output formats: Markdown (auto-linked) and HTML (browser-viewable)
-- ANALYZE-05: GUI form to select scan, configure report options, and preview/open generated reports
-
-Plans:
-- [ ] 07-01-PLAN.md — Design report data model and schema extensions
-- [ ] 07-02-PLAN.md — Implement `analyze` command with MD/HTML generation
-- [ ] 07-03-PLAN.md — Extend GUI with report preview and generation UI
+**Archive:** See `.planning/milestones/v1.0-ROADMAP.md` for full details.
