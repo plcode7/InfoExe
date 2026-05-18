@@ -1,3 +1,16 @@
 bin/
 obj/
 *.db
+
+# Installer build artifacts
+installer-output/
+innosetup.exe
+*.iss
+
+# Decompilation artifacts
+artifacts/
+
+# Build outputs
+**/bin/
+**/obj/
+**/publish/

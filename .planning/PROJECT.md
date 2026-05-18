@@ -27,9 +27,10 @@ Użytkownik może bezpiecznie i offline uzyskać wiarygodny, powtarzalny raport 
 
 ### Active
 
-- [ ] Porównywanie raportów między skanami
-- [ ] Custom templates dla raportów
-- [ ] SBOM export
+- [ ] Porównywanie raportów między skanami — v1.2
+- [ ] Custom templates dla raportów z obsługą Mermaid — v1.2
+- [ ] SBOM export (SPDX, CycloneDX) — v1.2
+- [ ] Integracja Mermaid — generowanie diagramów UML jako PNG — v1.2
 
 ### Out of Scope
 
@@ -37,20 +38,15 @@ Użytkownik może bezpiecznie i offline uzyskać wiarygodny, powtarzalny raport 
 - Automatyczne omijanie DRM/ochron licencyjnych — poza zakresem legalnym
 - PDF export — kompleksowa biblioteka + wersjonowanie
 
-## Current State: v1.1 Shipped
+## Current Milestone: v1.2 Zaawansowane raportowanie i eksport z diagramami UML
 
-**Shipped:** 2026-05-16
+**Goal:** Rozszerzenie możliwości raportowania o porównywanie skanów, własne szablony, eksport SBOM oraz generowanie diagramów UML (Mermaid) w raportach HTML.
 
-**Delivered:**
-- Skrypt `setup.ps1` do auto-konfiguracji środowiska (ILSpy, .NET SDK, NuGet, SQLite)
-- Wbudowana logika skanowania w GUI (ScanService.cs, brak zależności od InfoExeApp.exe przy skanowaniu)
-- Progress bar determinate (0-100) i live output podczas skanowania
-- Automatyczne wykrywanie narzędzi (.NET SDK, ILSpy) przy starcie GUI
-- ToolDiscovery.cs z wieloma mechanizmami fallback (dotnet tool list, PATH, well-known locations)
-
-**Known limitations:**
-- Report generation (analyze command) nadal używa CLI subprocess (GUI-11 partial)
-- GUI wymaga InfoExeApp.exe w katalogu build lub relative path dla generowania raportów
+**Target features:**
+- Porównywanie raportów między skanami — wykrywanie różnic w plikach, zależnościach, metadanych
+- Custom templates dla raportów — własne szablony MD/HTML z obsługą Mermaid dla diagramów UML
+- SBOM export — eksport do formatów SPDX i CycloneDX zgodnych ze standardami branżowymi
+- Integracja Mermaid — generowanie diagramów UML jako PNG i osadzanie w raportach HTML
 
 ## Context
 
@@ -90,4 +86,4 @@ Użytkownik może bezpiecznie i offline uzyskać wiarygodny, powtarzalny raport 
 This document evolves at phase transitions and milestone boundaries.
 
 ---
-*Last updated: 2026-05-16 — v1.1 milestone shipped*
+*Last updated: 2026-05-16 — v1.2 milestone started*
