@@ -28,6 +28,9 @@ return command switch
     "retry" => RunRetry(args, dbPath),
     "export" => RunExport(args, dbPath),
     "analyze" => RunAnalyze(args, dbPath),
+    "dbscan" => RunDbScan(args, dbPath),
+    "regscan" => RunRegScan(args, dbPath),
+    "configscan" => RunConfigScan(args, dbPath),
     _ => UnknownCommand(command)
 };
 
@@ -383,6 +386,9 @@ static void PrintUsage(bool polish)
     Console.WriteLine(polish ? "  retry      Ponów nieudane operacje" : "  retry      Retry failed operations");
     Console.WriteLine(polish ? "  export     Eksportuj wyniki (json, csv)" : "  export     Export results (json, csv)");
     Console.WriteLine(polish ? "  analyze    Generuj raport analityczny" : "  analyze    Generate analysis report");
+    Console.WriteLine(polish ? "  dbscan     Skanuj lokalne bazy danych" : "  dbscan     Scan for local databases");
+    Console.WriteLine(polish ? "  regscan    Analizuj rejestr Windows" : "  regscan    Analyze Windows Registry");
+    Console.WriteLine(polish ? "  configscan Skanuj pliki konfiguracyjne" : "  configscan Scan configuration files");
     Console.WriteLine(polish ? "  help       Pokaż tę pomoc" : "  help       Show this help");
 }
 
@@ -431,6 +437,142 @@ static string CsvEscape(string value)
     return value;
 }
 
+static int RunDbScan(string[] args, string dbPath)
+{
+    Console.WriteLine("Database Discovery Scan");
+    Console.WriteLine("=======================");
+    Console.WriteLine();
+
+    using var connection = Database.OpenConnection(dbPath);
+    Database.InitializeAnalysisTables(connection);
+
+    var discoveries = DatabaseDiscoveryService.DiscoverAll((msg, err) =>
+    {
+        if (err) Console.Error.WriteLine(msg);
+        else Console.WriteLine(msg);
+    });
+
+    using var tx = connection.BeginTransaction();
+    Database.InsertDatabaseDiscoveries(connection, tx, discoveries);
+    tx.Commit();
+
+    Console.WriteLine();
+    Console.WriteLine($"Discovered {discoveries.Count} databases:");
+    foreach (var d in discoveries)
+    {
+        var statusIcon = d.Status == "accessible" ? "[OK]" : d.Status == "file_only" ? "[FILE]" : "[ERR]";
+        Console.WriteLine($"  {statusIcon} {d.DatabaseType,-12} {d.DatabaseName,-30} {d.Location}");
+    }
+
+    // Summary by type
+    Console.WriteLine();
+    Console.WriteLine("Summary by type:");
+    foreach (var g in discoveries.GroupBy(d => d.DatabaseType).OrderByDescending(g => g.Count()))
+        Console.WriteLine($"  {g.Key,-15}: {g.Count()} found");
+
+    return 0;
+}
+
+static int RunRegScan(string[] args, string dbPath)
+{
+    Console.WriteLine("Windows Registry Analysis");
+    Console.WriteLine("=========================");
+    Console.WriteLine();
+
+    using var connection = Database.OpenConnection(dbPath);
+    Database.InitializeAnalysisTables(connection);
+
+    var findings = RegistryAnalyzer.AnalyzeAll((msg, err) =>
+    {
+        if (err) Console.Error.WriteLine(msg);
+        else Console.WriteLine(msg);
+    });
+
+    using var tx = connection.BeginTransaction();
+    Database.InsertRegistryFindings(connection, tx, findings);
+    tx.Commit();
+
+    Console.WriteLine();
+    Console.WriteLine($"Found {findings.Count} registry findings:");
+
+    // Summary by severity
+    foreach (var g in findings.GroupBy(f => f.Severity).OrderBy(g => g.Key))
+    {
+        var label = g.Key switch
+        {
+            "error" => "ERRORS",
+            "warning" => "WARNINGS",
+            "suspicious" => "SUSPICIOUS",
+            _ => "INFO"
+        };
+        Console.WriteLine($"  [{label}] {g.Count()} findings");
+    }
+
+    // Show errors and suspicious entries
+    var critical = findings.Where(f => f.Severity is "error" or "suspicious").Take(20);
+    foreach (var f in critical)
+        Console.WriteLine($"  [{f.Severity.ToUpper()}] {f.Description}");
+
+    // Summary by category
+    Console.WriteLine();
+    Console.WriteLine("Summary by category:");
+    foreach (var g in findings.GroupBy(f => f.Category).OrderByDescending(g => g.Count()))
+        Console.WriteLine($"  {g.Key,-25}: {g.Count()}");
+
+    return 0;
+}
+
+static int RunConfigScan(string[] args, string dbPath)
+{
+    var searchPath = GetOption(args, "--path") ?? GetOption(args, "--root") ?? Environment.CurrentDirectory;
+    if (!Directory.Exists(searchPath))
+    {
+        Console.Error.WriteLine($"Directory not found: {searchPath}");
+        return 2;
+    }
+
+    Console.WriteLine("Configuration File Scanner");
+    Console.WriteLine("==========================");
+    Console.WriteLine($"Scanning: {searchPath}");
+    Console.WriteLine();
+
+    using var connection = Database.OpenConnection(dbPath);
+    Database.InitializeAnalysisTables(connection);
+
+    var connections = ConfigFileScanner.ScanDirectory(searchPath, true, (msg, err) =>
+    {
+        if (err) Console.Error.WriteLine(msg);
+        else Console.WriteLine(msg);
+    });
+
+    using var tx = connection.BeginTransaction();
+    Database.InsertConfigConnections(connection, tx, connections);
+    tx.Commit();
+
+    Console.WriteLine();
+    Console.WriteLine($"Found {connections.Count} database connections in config files:");
+
+    foreach (var c in connections)
+    {
+        var dbLabel = c.Database ?? "(unknown)";
+        var serverLabel = c.Server ?? "(local)";
+        Console.WriteLine($"  [{c.DatabaseType,-12}] {dbLabel,-25} @ {serverLabel,-25} ({Path.GetFileName(c.FilePath)})");
+    }
+
+    // Summary by file type
+    Console.WriteLine();
+    Console.WriteLine("Summary by file type:");
+    foreach (var g in connections.GroupBy(c => c.FileType).OrderByDescending(g => g.Count()))
+        Console.WriteLine($"  {g.Key,-10}: {g.Count()} connection(s)");
+
+    // Summary by database type
+    Console.WriteLine();
+    Console.WriteLine("Summary by database type:");
+    foreach (var g in connections.GroupBy(c => c.DatabaseType).OrderByDescending(g => g.Count()))
+        Console.WriteLine($"  {g.Key,-15}: {g.Count()}");
+
+    return 0;
+}
 // ── Analysis formatters (kept inline, will be refactored later) ──
 
 static class AnalysisReportBuilder

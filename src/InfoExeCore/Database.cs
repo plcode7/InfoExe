@@ -280,4 +280,134 @@ public static class Database
         var name = Path.GetFileName(trimmed);
         return string.IsNullOrWhiteSpace(name) ? trimmed : name;
     }
+
+    // ── New tables for database & registry analysis ──
+
+    public static void InitializeAnalysisTables(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            CREATE TABLE IF NOT EXISTS db_discoveries(
+                discovery_id TEXT PRIMARY KEY,
+                database_type TEXT NOT NULL,
+                location TEXT NOT NULL,
+                database_name TEXT,
+                connection_string TEXT,
+                source_file TEXT,
+                file_size_bytes INTEGER,
+                version TEXT,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                discovered_at_utc TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS registry_keys(
+                finding_id TEXT PRIMARY KEY,
+                hive TEXT NOT NULL,
+                key_path TEXT NOT NULL,
+                value_name TEXT,
+                value_data TEXT,
+                value_type TEXT,
+                severity TEXT NOT NULL,
+                category TEXT NOT NULL,
+                description TEXT,
+                recommendation TEXT,
+                discovered_at_utc TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS config_connections(
+                config_id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                database_type TEXT NOT NULL,
+                server TEXT,
+                database_name TEXT,
+                user_id TEXT,
+                password_hash TEXT,
+                connection_string TEXT,
+                extra_parameters TEXT,
+                discovered_at_utc TEXT NOT NULL
+            );
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    public static void InsertDatabaseDiscoveries(SqliteConnection connection, SqliteTransaction tx,
+        IEnumerable<DatabaseDiscovery> discoveries)
+    {
+        foreach (var d in discoveries)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                INSERT INTO db_discoveries(discovery_id, database_type, location, database_name, connection_string,
+                    source_file, file_size_bytes, version, status, error_message, discovered_at_utc)
+                VALUES($id, $type, $location, $name, $cs, $source, $size, $version, $status, $error, $discovered);
+                """;
+            cmd.Parameters.AddWithValue("$id", d.DiscoveryId);
+            cmd.Parameters.AddWithValue("$type", d.DatabaseType);
+            cmd.Parameters.AddWithValue("$location", d.Location);
+            cmd.Parameters.AddWithValue("$name", d.DatabaseName as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$cs", d.ConnectionString as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$source", d.SourceFile as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$size", d.FileSizeBytes as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$version", d.Version as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$status", d.Status);
+            cmd.Parameters.AddWithValue("$error", d.ErrorMessage as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$discovered", d.DiscoveredAtUtc.ToString("O"));
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    public static void InsertRegistryFindings(SqliteConnection connection, SqliteTransaction tx,
+        IEnumerable<RegistryKeyFinding> findings)
+    {
+        foreach (var f in findings)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                INSERT INTO registry_keys(finding_id, hive, key_path, value_name, value_data, value_type,
+                    severity, category, description, recommendation, discovered_at_utc)
+                VALUES($id, $hive, $path, $name, $data, $type, $severity, $category, $desc, $rec, $discovered);
+                """;
+            cmd.Parameters.AddWithValue("$id", f.FindingId);
+            cmd.Parameters.AddWithValue("$hive", f.Hive);
+            cmd.Parameters.AddWithValue("$path", f.KeyPath);
+            cmd.Parameters.AddWithValue("$name", f.ValueName as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$data", f.ValueData as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$type", f.ValueType as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$severity", f.Severity);
+            cmd.Parameters.AddWithValue("$category", f.Category);
+            cmd.Parameters.AddWithValue("$desc", f.Description as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$rec", f.Recommendation as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$discovered", f.DiscoveredAtUtc.ToString("O"));
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    public static void InsertConfigConnections(SqliteConnection connection, SqliteTransaction tx,
+        IEnumerable<ConfigConnection> connections)
+    {
+        foreach (var c in connections)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                INSERT INTO config_connections(config_id, file_path, file_type, database_type, server, database_name,
+                    user_id, password_hash, connection_string, extra_parameters, discovered_at_utc)
+                VALUES($id, $path, $fileType, $dbType, $server, $db, $user, $pwdHash, $cs, $extra, $discovered);
+                """;
+            cmd.Parameters.AddWithValue("$id", c.ConfigId);
+            cmd.Parameters.AddWithValue("$path", c.FilePath);
+            cmd.Parameters.AddWithValue("$fileType", c.FileType);
+            cmd.Parameters.AddWithValue("$dbType", c.DatabaseType);
+            cmd.Parameters.AddWithValue("$server", c.Server as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$db", c.Database as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$user", c.UserId as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$pwdHash", c.PasswordHash as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$cs", c.ConnectionString as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$extra", c.ExtraParameters as object ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$discovered", c.DiscoveredAtUtc.ToString("O"));
+            cmd.ExecuteNonQuery();
+        }
+    }
 }
