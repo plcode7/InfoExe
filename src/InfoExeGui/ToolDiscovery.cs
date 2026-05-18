@@ -25,15 +25,13 @@ public static class ToolDiscovery
                 var output = process.StandardOutput.ReadToEnd();
                 if (output.Contains("ilspycmd"))
                 {
-                    // ilspycmd is installed as global tool — find the actual exe
                     var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                     var toolPath = Path.Combine(homeDir, ".dotnet", "tools", "ilspycmd.exe");
-                    if (File.Exists(toolPath))
-                        return toolPath;
+                    if (File.Exists(toolPath)) return toolPath;
                 }
             }
         }
-        catch { }
+        catch (Exception ex) { Debug.WriteLine($"FindIlSpy (dotnet tool list): {ex.Message}"); }
 
         // 2. Check PATH
         try
@@ -42,22 +40,22 @@ public static class ToolDiscovery
             foreach (var dir in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
             {
                 var candidate = Path.Combine(dir.Trim(), "ilspycmd.exe");
-                if (File.Exists(candidate))
-                    return candidate;
+                if (File.Exists(candidate)) return candidate;
             }
         }
-        catch { }
+        catch (Exception ex) { Debug.WriteLine($"FindIlSpy (PATH): {ex.Message}"); }
 
         // 3. Check well-known locations
-        var wellKnown = new[]
+        try
         {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet", "tools", "ilspycmd.exe"),
-        };
-        foreach (var path in wellKnown)
-        {
-            if (File.Exists(path))
-                return path;
+            var wellKnown = new[]
+            {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet", "tools", "ilspycmd.exe"),
+            };
+            foreach (var path in wellKnown)
+                if (File.Exists(path)) return path;
         }
+        catch (Exception ex) { Debug.WriteLine($"FindIlSpy (well-known): {ex.Message}"); }
 
         return null;
     }
@@ -80,8 +78,9 @@ public static class ToolDiscovery
             process.WaitForExit(5000);
             return process.ExitCode == 0;
         }
-        catch
+        catch (Exception ex)
         {
+            Debug.WriteLine($"IsDotNetSdkAvailable: {ex.Message}");
             return false;
         }
     }
@@ -104,8 +103,9 @@ public static class ToolDiscovery
             process.WaitForExit(5000);
             return process.ExitCode == 0 ? process.StandardOutput.ReadToEnd().Trim() : null;
         }
-        catch
+        catch (Exception ex)
         {
+            Debug.WriteLine($"GetDotNetVersion: {ex.Message}");
             return null;
         }
     }
