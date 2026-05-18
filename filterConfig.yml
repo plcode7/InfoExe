@@ -1,0 +1,20 @@
+# docfx API filter configuration
+apiRules:
+- exclude:
+    uidRegex: ^System\.Object
+    type: Type
+- exclude:
+    uidRegex: ^Microsoft\.Data\.Sqlite
+    type: Namespace
+- exclude:
+    uidRegex: ^Avalonia
+    type: Namespace
+- include:
+    uidRegex: ^InfoExeCore
+    type: Namespace
+- include:
+    uidRegex: ^InfoExeGui
+    type: Namespace
+- include:
+    uidRegex: ^InfoExeApp
+    type: Namespace

@@ -1,0 +1,84 @@
+{
+  "metadata": [
+    {
+      "src": [
+        {
+          "files": [
+            "src/InfoExeCore/InfoExeCore.csproj",
+            "src/InfoExeApp/InfoExeApp.csproj",
+            "src/InfoExeGui/InfoExeGui.csproj"
+          ]
+        }
+      ],
+      "dest": "docs/api",
+      "filter": "filterConfig.yml",
+      "properties": {
+        "TargetFramework": "net10.0"
+      }
+    }
+  ],
+  "build": {
+    "content": [
+      {
+        "files": [
+          "docs/index.md",
+          "docs/api/**/*.yml",
+          "docs/api/**/*.md"
+        ]
+      },
+      {
+        "files": [
+          "README.md",
+          "INSTALLER.md",
+          "DB-REGISTRY-ANALYSIS.md",
+          "CODE-REVIEW.md",
+          "INSTALLER_SUMMARY.md"
+        ],
+        "src": ".",
+        "dest": "articles"
+      },
+      {
+        "files": [
+          "PROJECT.md",
+          "ROADMAP.md",
+          "STATE.md"
+        ],
+        "src": ".planning",
+        "dest": "planning"
+      }
+    ],
+    "resource": [
+      {
+        "files": [
+          "images/**"
+        ]
+      }
+    ],
+    "overwrite": [],
+    "dest": "docs/_site",
+    "globalMetadataFiles": [],
+    "fileMetadataFiles": [],
+    "template": [
+      "default",
+      "modern"
+    ],
+    "postProcessors": [],
+    "markdownEngineName": "markdig",
+    "noLangKeyword": false,
+    "keepFileLink": false,
+    "cleanupCacheHistory": false,
+    "disableGitFeatures": false,
+    "globalMetadata": {
+      "_appTitle": "InfoExe Documentation",
+      "_appName": "InfoExe",
+      "_appFooter": "InfoExe — Lokalny analizator i dekompilator .NET",
+      "_enableSearch": true,
+      "_enableNewTab": true,
+      "_disableContribution": false,
+      "_gitContribute": {
+        "repo": "https://github.com/passcode2026/InfoExe",
+        "branch": "master"
+      }
+    }
+  }
+}

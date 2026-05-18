@@ -1,0 +1,6 @@
+# Docfx documentation
+docs/_site/
+docs/api/
+
+# Docfx metadata
+docs/.manifest

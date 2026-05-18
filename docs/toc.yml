@@ -1,0 +1,27 @@
+- name: Home
+  href: index.md
+- name: Articles
+  href: articles/
+  items:
+    - name: README
+      href: articles/README.md
+    - name: Installer Guide
+      href: articles/INSTALLER.md
+    - name: Database & Registry Analysis
+      href: articles/DB-REGISTRY-ANALYSIS.md
+    - name: Code Review
+      href: articles/CODE-REVIEW.md
+    - name: Installer Summary
+      href: articles/INSTALLER_SUMMARY.md
+- name: Planning
+  href: planning/
+  items:
+    - name: Project Overview
+      href: planning/PROJECT.html
+    - name: Roadmap
+      href: planning/ROADMAP.html
+    - name: State
+      href: planning/STATE.html
+- name: API Reference
+  href: api/
+  homepage: api/index.md

@@ -14,3 +14,7 @@ artifacts/
 **/bin/
 **/obj/
 **/publish/
+
+# Documentation build
+docs/_site/
+docs/api/
