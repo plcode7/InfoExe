@@ -18,11 +18,15 @@ InfoExe to narzędzie do analizy binariów .NET (`.dll`, `.exe`) z możliwości�
 - .NET 10.0 Runtime
 - ILSpy (ilspycmd) — opcjonalnie, dla dekompilacji
 
-## Szybki start
+## Pobieranie
+
+**[Pobierz najnowszą wersję](https://github.com/passcode2026/InfoExe/releases/latest)**
+
+[![Release](https://img.shields.io/github/v/release/passcode2026/InfoExe?label=latest)](https://github.com/passcode2026/InfoExe/releases/latest)
 
 ### Instalacja
 
-1. Pobierz instalator `InfoExe-Setup-{version}.exe`
+1. Pobierz `InfoExe-Setup-1.1.0.exe` z [zakładki Releases](https://github.com/passcode2026/InfoExe/releases)
 2. Uruchom instalator i postępuj zgodnie z instrukcjami
 3. Uruchom "InfoExe Setup (Dependencies)" z Menu Start (opcjonalnie)
 
